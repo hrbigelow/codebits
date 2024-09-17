@@ -1,0 +1,72 @@
+Notes for using CUDA
+
+use cudaMalloc3D() for allocating 2D or 3D structures, so they are properly padded
+
+To start out, assume we have a function:
+
+mat3 trajectory(float t)
+
+where t is assumed in [0, 1]
+
+1. Spend four warps to compute 32 source positions for the four corners of the target
+square.  Round these four source positions to the nearest containing rectangle on the
+grid.  Store min_x, max_x, min_y, max_y in shared memory for later.
+
+struct SourceGrid {
+  // specifies the subset of the viewport grid containing the receptive field
+  // shape of the target block.
+  uint x_min, x_max, y_min, y_max;
+}
+
+// This is constructed in shared mem
+__shared__ SourceGrid source_grid = { ... };
+
+2. Compute squared path distance for one of the warps, set a shared mem variable T to
+be proportional to this distance.
+
+3. Now that you have a grid-aligned rectangle, you can assign integers to each block
+in that rectangle.
+
+// Determine which blocks in SourceGrid are non-empty.
+We could use a geometric optimization here and only compute those blocks for which
+the four corners overlap.  This would allow a trajectory of up to 256 steps.
+
+mwah, it doesn't work because a rectangle could overlap
+
+What about, instead of determining what rectangles each of the four corner trajectory
+points are *in*, we ask, which grid points are in each of the trajectory rectangles?
+But, this is also a hard test.  You could however try to find the smallest containing
+rectangle.  This gives you something.  
+
+If doing this in a single warp, you could do this reduction quickly, to find the
+bounding grid rectangle of the four corners of overlap.  So, threads 0-3 in the warp
+find the xi,yi grid coordinates.  You then do a min and max reduce on each of xi and
+yi, giving you a Rectangle.
+
+Then, do an atomicAnd for each block in the rectangle against shared mem.
+Could just have a maximum number of possible source rectangles, like 
+
+
+
+
+
+Can you 
+
+Let's let warp i compute steps, however many steps we need. 
+
+__shared__ 
+
+
+warp     corner     timesteps
+i        i % 4      (i / 4) * 32 to (i / 4) * 32 + 31
+0        0          0-31
+1        1          0-31
+2        2          0-31
+3        3          0-31
+4        0          32-63
+5        1          32-63
+6        2          32-63
+...
+31       3          224-255
+
+
