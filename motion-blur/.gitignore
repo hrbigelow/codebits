@@ -1,0 +1,4 @@
+*.o
+motion_blur
+build/
+CMakeUserPresets.json

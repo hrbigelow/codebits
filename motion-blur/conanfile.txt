@@ -1,0 +1,7 @@
+[requires]
+sail/0.9.5
+
+[generators]
+CMakeDeps
+CMakeToolchain
+
