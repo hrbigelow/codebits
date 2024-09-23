@@ -53,6 +53,11 @@ __global__ void motionBlur_kernel(
             gridIndex[y][x] = 0;
         }
     }
+    if (threadId == 0) {
+        gridOffset.x = 10000;
+        gridOffset.y = 10000;
+    }
+
     __syncthreads();
 
     /*
@@ -69,30 +74,27 @@ __global__ void motionBlur_kernel(
      */
     float2 lmin, lmax, gmin;
 
-    if (threadIdx.y < 4) {
+    if (threadId < 128) {
         // use one warp for each target square corner
         // use warpSize timesteps to estimate full extent of receptive field
         const float inc = 0.999 / warpSize;
-        int cornerIdx = threadIdx.x % 4;
+        int cornerIdx = threadId % 4;
         int step = threadId / 4;
         float t = step * inc;
         assert(t < 1.0);
-        float2 corner = targetCorners[cornerIdx];
-        float2 source = linTransform(trajectoryBuffer, numMats, t, corner);
+        float2 source = linTransform(trajectoryBuffer, numMats, t, targetCorners[cornerIdx]);
         warp_min(source, 1, 4, lmin);
         warp_max(source, 1, 4, lmax);
         warp_min(lmin, 4, 16, gmin);
-    }
-    __syncthreads();
-
-    if (threadIdx.y < 4 && threadIdx.x == 0) {
-        atomicMin(&gridOffset.x, to_block(gmin.x));
-        atomicMin(&gridOffset.y, to_block(gmin.y));
+        if (threadId % 32 == 0) {
+            atomicMin(&gridOffset.x, to_block(gmin.x));
+            atomicMin(&gridOffset.y, to_block(gmin.y));
+        }
     }
 
     __syncthreads();
 
-    if (threadIdx.y < 4 && threadIdx.x % 4 == 0) {
+    if (threadId < 128 && threadId % 4 == 0) {
         // populate for first phase of gridIndex (0-1 occupancy mask)
         // find the bounding grid for a timestep's source quadrilateral.
         // use each of the 32 timesteps in the trajectory.
@@ -127,28 +129,12 @@ __global__ void motionBlur_kernel(
     __shared__ typename BlockReduce::TempStorage br_storage;
     int maskSum = BlockReduce(br_storage).Sum(thread_data);
 
-    int dumb_sum = 0;
-    /*
-    for (sx=0; sx!=32; sx++) {
-        for (sy=0; sy!=32; sy++) {
-            dumb_sum += gridIndex[sy][sx];
-        }
-    }
-    */
-
     if (threadId == 0) {
         numOccupiedBlocks = maskSum;
-        if (maskSum == 0) {
-            printf("empty block: dumb_sum: %d\n", dumb_sum);
-        }
-        // assert(numOccupiedBlocks > 0);
+        assert(numOccupiedBlocks > 0);
     }
 
     __syncthreads();
-
-    if (numOccupiedBlocks == 0) {
-        return;
-    }
 
     for (int c=0; c!=NUM_CELLS_PER_THREAD; c++) {
         thread_data[c] = gridIndex[sy][sx+c];
@@ -176,13 +162,6 @@ __global__ void motionBlur_kernel(
 
     // finished writing occupiedBlocks
     __syncthreads();
-    /*
-       if (blockIdx.x == 0 && blockIdx.y == 0 && threadNum < numOccupiedBlocks) {
-       ushort2 blk = occupiedBlocks[threadNum];
-       printf("i: %d, occupiedBlock(adjusted): (%d, %d)\n", 
-       threadNum, blk.y + gridOffset.y, blk.x + gridOffset.x);
-       }
-     */
 
     // occupiedBlocks, gridOffset are now initialized.
     // iterate in phases of loading pixel data, then accumulating it
@@ -200,24 +179,6 @@ __global__ void motionBlur_kernel(
             blockIdx.x * blockDim.x + threadIdx.x + 0.5,
             blockIdx.y * blockDim.y + threadIdx.y + 0.5);
 
-    /*
-       if (blockIdx.x == QUERY_X && blockIdx.y == QUERY_Y && threadIdx.x == 16 && threadIdx.y == 16) {
-       for (int b=0; b != numOccupiedBlocks; b++) {
-       printf("b: %d, bc: (%d, %d)\n", b, occupiedBlocks[b].x, occupiedBlocks[b].y);
-       }
-       }
-     */
-    // bitmask of layers initialized
-    // uint layerInitialized = 0;
-    // uint blockInitialized = 0;
-
-    /*
-    for (int l=0; l != numPixelLayers; l++) {
-        pixelBuf[l][threadIdx.y][threadIdx.x] = make_uchar3(255,255,255);
-    }
-    __syncthreads();
-    */
-
     while (endBlock < numOccupiedBlocks) {
         // __syncthreads();
         int layer = endBlock - begBlock;
@@ -226,10 +187,6 @@ __global__ void motionBlur_kernel(
         pixelBuf[layer][threadIdx.y][threadIdx.x] = get_source_pixel(
                 gridOffset, occupiedBlocks, 
                 endBlock, threadIdx.x, threadIdx.y, image, inputWidth, inputHeight);
-
-        // layerInitialized |= 1u<<layer;
-        // blockInitialized |= 1u<<endBlock;
-        // __syncthreads();
 
         endBlock++;
         if ((endBlock - begBlock) < numPixelLayers && endBlock < numOccupiedBlocks) {
@@ -260,17 +217,6 @@ __global__ void motionBlur_kernel(
 
             assert(layer < numPixelLayers); 
 
-            /*
-            if (blockIdx.x == QUERY_X && blockIdx.y == QUERY_Y && threadIdx.x == 16 && 
-                    ! (layerInitialized & 1<<layer)) {
-                printf("layer %d uninitialized\n", layer);
-            }
-            */
-            // assert(layerInitialized & 1<<layer);
-            // assert(blockInitialized & 1<<block);
-            // assert(gridOffset.x == 0 && gridOffset.y == 0);
-            // if (! layerInitialized & 1<<layer) continue;
-
             uchar3 thisColor = pixelBuf[layer][py][px];
             // uchar3 thisColor = get_source_pixel(gridOffset, occupiedBlocks, block, px, py, 
               //       image, inputWidth, inputHeight); 
@@ -294,20 +240,6 @@ __global__ void motionBlur_kernel(
         blurred[outIdx].y = roundf((float)outColor.y / (float)numAccum);
         blurred[outIdx].z = roundf((float)outColor.z / (float)numAccum);
     }
-    /*
-    // TODO: remove
-    pixelBuf[0][threadIdx.y][threadIdx.x] = make_uchar3(255,0,0);
-    pixelBuf[1][threadIdx.y][threadIdx.x] = make_uchar3(0,255,0);
-    pixelBuf[2][threadIdx.y][threadIdx.x] = make_uchar3(0,0,255);
-
-    if (threadId < MAX_OCCU_BLOCKS) {
-        occupiedBlocks[threadId] = make_ushort2(0, 0);
-    }
-    if (threadIdx.x == 0 && threadIdx.y == 0) {
-        numOccupiedBlocks = 0; 
-    }
-    __syncthreads();
-    */
 }
 
 uint ceil_ratio(uint a, uint b) {
@@ -361,6 +293,4 @@ void motionBlur(
     CUDA_CHECK(cudaFree(d_image));
     CUDA_CHECK(cudaFree(d_blurred));
 }
-
-
 
