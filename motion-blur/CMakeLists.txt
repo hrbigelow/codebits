@@ -13,5 +13,4 @@ set(CUDA_NVCC_FLAGS_DEBUG "-G;-lineinfo;-rdynamic;-g")
 
 include_directories(${CMAKE_SOURCE_DIR}/deps)
 target_include_directories(${PROJECT_NAME} PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
-target_link_libraries(${PROJECT_NAME} sail::sail)
 
