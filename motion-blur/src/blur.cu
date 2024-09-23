@@ -4,419 +4,368 @@
 #include <cub/block/block_scan.cuh>
 #include <curand_kernel.h>
 #include "blur.h"
+#include "dfuncs.cuh"
 #include "tools.h"
-
-#define BLOCK_DIM 32
-// maximum square side in pixels
-#define SOURCE_FIELD_SIZE 2048 
-// #define SOURCE_FIELD_SIZE 1024
-#define FIELD_BLOCKS (unsigned int)(SOURCE_FIELD_SIZE / BLOCK_DIM)
-
-// maximum number of occupied blocks
-#define MAX_OCCU_BLOCKS 512
 
 #define MAX_TRAJECTORIES 64 
 __constant__ Homography trajectoryBuffer[MAX_TRAJECTORIES];
 
-__device__ float2 transform(const Homography *mats, unsigned int t, float2 coord)
-{
-  float x = coord.x;
-  float y = coord.y;
-  const Homography &h = mats[t];
-  // printf("t: %d, x: %f, y: %f\n", t, x, y);
-  /*
-  printf("%f, %f, %f, %f, %f, %f, %f, %f, %f\n", 
-      h[0][0], h[0][1], h[0][2],
-      h[1][0], h[1][1], h[1][2],
-      h[2][0], h[2][1], h[2][2]);
-  */
-
-  float xs = h[0][0] * x + h[0][1] * y + h[0][2];
-  float ys = h[1][0] * x + h[1][1] * y + h[1][2];
-  float ws = h[2][0] * x + h[2][1] * y + h[2][2];
-  // printf("xs: %f, ys: %f, ws: %f\n", xs, ys, ws);
-  return make_float2(xs / ws, ys / ws);
-}
-
-__device__ float2 linTransform(
-    const Homography *mats, unsigned int num_steps, float t, float2 coord)
-{
-  // compute a linearly interpolated transformed coordinate, assuming t in [0, 1)
-  assert(t >= 0.0);
-  assert(t < 1.0);
-  float i;
-  float rem = modf(t * (num_steps - 1), &i);
-  assert(i < num_steps - 1);
-  // printf("rem: %f, i: %d\n", rem, (unsigned)i);
-
-  float2 beg = transform(mats, unsigned(i), coord);
-  float2 end = transform(mats, unsigned(i)+1, coord);
-  // printf("rem: %f, i: %d, beg: %f, %f, end: %f, %f\n", rem, (unsigned)i, beg.x, beg.y, end.x, end.y);
-  return make_float2(
-      beg.x * (1.0 - rem) + end.x * rem,
-      beg.y * (1.0 - rem) + end.y * rem);
-}
-
-__inline__ __device__ void warp_min(float2 val, int beg_offset, int end_offset, float2 &min_val) {
-  // set min_val to the minimum of  values for lanes 
-  min_val = val;
-  float2 other;
-  for (int offset = beg_offset; offset < end_offset; offset<<=1) {
-    other.x = __shfl_down_sync(0xFFFFFFFF, min_val.x, offset);
-    other.y = __shfl_down_sync(0xFFFFFFFF, min_val.y, offset);
-    min_val.x = min(min_val.x, other.x);
-    min_val.y = min(min_val.y, other.y);
-  }
-}
-
-__inline__ __device__ void warp_max(float2 val, int beg_offset, int end_offset, float2 &max_val) {
-  // set max_val to the maximum of  values for lanes 
-  max_val = val;
-  float2 other;
-  for (int offset = beg_offset; offset < end_offset; offset<<=1) {
-    other.x = __shfl_down_sync(0xFFFFFFFF, max_val.x, offset);
-    other.y = __shfl_down_sync(0xFFFFFFFF, max_val.y, offset);
-    max_val.x = max(max_val.x, other.x);
-    max_val.y = max(max_val.y, other.y);
-  }
-}
-
-__inline__ __device__ int wrap_mod(int val, uint mod) {
-  // safe, wrapping modulo for signed integers
-  return ((val % mod) + mod) % mod;
-}
-
-__inline__ __device__ float wrap_fmod(float val, float mod) {
-  return fmodf(fmodf(val, mod) + mod, mod);
-}
-
-__inline__ __device__ int to_block(float val) {
-  return (int)std::floor(val / BLOCK_DIM);
-}
-
-
 __global__ void motionBlur_kernel(
-    uint numMats,
-    const uchar3 *image, 
-    uint inputWidth, 
-    uint inputHeight, 
-    uint numPixelLayers,
-    float stepsPerOccuBlock, 
-    uchar3 *blurred,
-    uint viewportWidth,
-    uint viewportHeight) {
-  /* `numPixelLayers` is number of blocks worth of image data to accumulate at a
-   * given time.
-   * `stepsPerOccuBlock` is 
-   */
-  extern __shared__ int shbuf[];
-  typedef uchar3 PixelBlock[BLOCK_DIM][BLOCK_DIM];
-  PixelBlock *pixelBuf = reinterpret_cast<PixelBlock *>(shbuf);
+        uint numMats,
+        const uchar3 *image, 
+        uint inputWidth, 
+        uint inputHeight, 
+        uint numPixelLayers,
+        float stepsPerOccuBlock, 
+        uchar3 *blurred,
+        uint viewportWidth,
+        uint viewportHeight) {
+    /* `numPixelLayers` is number of blocks worth of image data to accumulate at a
+     * given time.
+     * `stepsPerOccuBlock` is 
+     */
+    uint threadId = threadIdx.y * blockDim.x + threadIdx.x;  // 0:1024
 
-  // defines (bx, by) minimum block found to be occupied in the receptive field
-  __shared__ int2 gridOffset;
-  // gridIndex[gy][gx] with (gy, gx) block index relative to gridOffset
-  // In the first phase, this is a 0-1 mask to show which blocks overlap the receptive field.
-  // In second phase, empty blocks are assigned -1, and other blocks are
-  // consecutively numbered in row-major order from 0 onwards.
-  __shared__ int gridIndex[FIELD_BLOCKS][FIELD_BLOCKS];
+    extern __shared__ char shbuf[];
+    PixelBlock *pixelBuf = reinterpret_cast<PixelBlock *>(shbuf);
 
-  // occupiedBlocks[i] = (gy, gx), index into gridIndex
-  __shared__ ushort2 occupiedBlocks[MAX_OCCU_BLOCKS];
-  __shared__ uint numOccupiedBlocks;
+    // defines (bx, by) minimum block found to be occupied in the receptive field
+    __shared__ int2 gridOffset;
+    // gridIndex[gy][gx] with (gy, gx) block index relative to gridOffset
+    // In the first phase, this is a 0-1 mask to show which blocks overlap the receptive field.
+    // In second phase, empty blocks are assigned -1, and other blocks are
+    // consecutively numbered in row-major order from 0 onwards.
+    __shared__ GridIndex gridIndex;
 
-  // 1. Determine grid bounding box (in global viewport grid indices)
-  float xbeg = blockIdx.x * blockDim.x + 0.5;
-  float ybeg = blockIdx.y * blockDim.y + 0.5;
-  float xend = xbeg + blockDim.x - 1.0;
-  float yend = ybeg + blockDim.y - 1.0;
-  float2 targetCorners[4] = { { xbeg, ybeg }, { xbeg, yend }, { xend, ybeg }, { xend, yend } };
+    // occupiedBlocks[i] = (gx, gy), index into gridIndex
+    __shared__ ushort2 occupiedBlocks[MAX_OCCU_BLOCKS];
+    __shared__ int numOccupiedBlocks;
 
-  // TODO - further optimize?
-  if (threadIdx.y < FIELD_BLOCKS && threadIdx.x < FIELD_BLOCKS){
-    for (uint y=threadIdx.y; y<FIELD_BLOCKS; y+=blockDim.y) {
-      for (uint x=threadIdx.x; x<FIELD_BLOCKS; x += blockDim.x) {
-        gridIndex[y][x] = 0;
-      }
+    // 1. Determine grid bounding box (in global viewport grid indices)
+    float xbeg = blockIdx.x * blockDim.x + 0.5;
+    float ybeg = blockIdx.y * blockDim.y + 0.5;
+    float xend = xbeg + blockDim.x - 1.0;
+    float yend = ybeg + blockDim.y - 1.0;
+    float2 targetCorners[4] = { { xbeg, ybeg }, { xbeg, yend }, { xend, ybeg }, { xend, yend } };
+
+    if (threadIdx.y < FIELD_BLOCKS && threadIdx.x < FIELD_BLOCKS){
+        for (int y=threadIdx.y; y<FIELD_BLOCKS; y+=blockDim.y) {
+            for (int x=threadIdx.x; x<FIELD_BLOCKS; x+=blockDim.x) {
+                gridIndex[y][x] = 0;
+            }
+        }
     }
-  }
-  if (threadIdx.y == 0 && threadIdx.x == 0){
-    gridOffset = make_int2(10000, 10000); // large initial seed values for minimization
-  }
-  __syncthreads();
-  
-  /*
-     estimate receptive field gridRect in viewport grid using 32 timesteps.
-     Also, populate the gridIndex based on the grid extent of each timestep.
 
-     Work is divided into four warps with each warp containing 8 timesteps.  groups
-     of four lanes each represent the four corners of the target squre for that
-     timestep.
-
-     update shared variables:
-     gridRect
-     gridIndex
-   */
-
-  if (threadIdx.y < 4) {
-    // use one warp for each target square corner
-    // use warpSize timesteps to estimate full extent of receptive field
-    const float inc = 0.999 / warpSize;
-    int cornerIdx = threadIdx.x % 4;
-    uint step = (threadIdx.y * blockDim.y + threadIdx.x) / 4;
-    float t = step * inc;
-    assert(t < 1.0);
-    float2 corner = targetCorners[cornerIdx];
-    float2 source;
-    source = linTransform(trajectoryBuffer, numMats, t, corner);
     /*
-    if (threadIdx.x == 0 && threadIdx.y == 0) {
-      printf("source: %f, %f\n", source.x, source.y);
+    if (threadId == 0){
+        gridOffset = make_int2(10000, 10000); // large initial seed values for minimization
+        for (int y=0; y != FIELD_BLOCKS; y++) {
+            for (int x=0; x != FIELD_BLOCKS; x++) {
+                gridIndex[y][x] = 0;
+            }
+        }
     }
     */
-    // source = make_float2(10000.0, -10000.0);
+    __syncthreads();
+
+    /*
+       estimate receptive field gridRect in viewport grid using 32 timesteps.
+       Also, populate the gridIndex based on the grid extent of each timestep.
+
+       Work is divided into four warps with each warp containing 8 timesteps.  groups
+       of four lanes each represent the four corners of the target squre for that
+       timestep.
+
+       update shared variables:
+       gridRect
+       gridIndex
+     */
     float2 lmin, lmax, gmin;
-    warp_min(source, 1, 4, lmin);
-    warp_max(source, 1, 4, lmax);
-    warp_min(lmin, 4, 16, gmin);
-    // warp_max(lmax, 4, 16, gmax);
-    __syncthreads();
-    atomicMin(&gridOffset.x, to_block(gmin.x));
-    atomicMin(&gridOffset.y, to_block(gmin.y));
-    __syncthreads();
 
-    // populate for first phase of gridIndex (0-1 occupancy mask)
-    // find the bounding grid for a timestep's source quadrilateral.
-    // use each of the 32 timesteps in the trajectory.
-    if (cornerIdx == 0) {
-      uint grid_lmin_x = to_block(lmin.x) - gridOffset.x;
-      uint grid_lmax_x = to_block(lmax.x) - gridOffset.x + 1;
-      uint grid_lmin_y = to_block(lmin.y) - gridOffset.y;
-      uint grid_lmax_y = to_block(lmax.y) - gridOffset.y + 1;
-      assert(grid_lmin_x < grid_lmax_x);
-      assert(grid_lmin_y < grid_lmax_y);
-      for (uint y=grid_lmin_y; y != grid_lmax_y; ++y) {
-        for (uint x=grid_lmin_x; x != grid_lmax_x; ++x) {
-          atomicExch(&gridIndex[y][x], 1);
-        }
-      }
-    }
-  }
-  // TODO: is this needed?
-  __syncthreads();
-
-  using BlockScan = cub::BlockScan<int, BLOCK_DIM, cub::BLOCK_SCAN_RAKING, BLOCK_DIM>;
-  __shared__ typename BlockScan::TempStorage temp_storage;
-  int thread_data[4];
-  uint threadId = threadIdx.y * blockDim.x + threadIdx.x;  // 0:1024
-  uint elemId = threadId * 4;                              // 0:4096:4
-  uint2 sourceGrid;
-  sourceGrid.y = elemId / 64;                              // 0:64
-  sourceGrid.x = elemId % 64;                              // 0:64:4
-
-  for (uint c=0; c!=4; c++) {
-    thread_data[c] = gridIndex[sourceGrid.y][sourceGrid.x+c];
-  }
-  BlockScan(temp_storage).InclusiveSum(thread_data, thread_data);
-
-  using BlockReduce = cub::BlockReduce<int, BLOCK_DIM, cub::BLOCK_REDUCE_WARP_REDUCTIONS, 
-        BLOCK_DIM>;
-  __shared__ typename BlockReduce::TempStorage br_storage;
-  numOccupiedBlocks = BlockReduce(br_storage).Reduce(thread_data, cub::Max()) + 1;
-
-  for (uint c=0; c!=4; c++) {
-    if (gridIndex[sourceGrid.y][sourceGrid.x+c] == 1) {
-      gridIndex[sourceGrid.y][sourceGrid.x+c] = thread_data[c];
-    } else {
-      gridIndex[sourceGrid.y][sourceGrid.x+c] = -1;
-    }
-  }
-
-  __syncthreads();
-  // only need to call __syncthreads() if temp_storage is reused
-  if (blockIdx.x == 0 && blockIdx.y == 0 && elemId == 0) {
-    printf("numOccupiedBlocks: %d\n", numOccupiedBlocks);
-    for (uint y=0; y != 64; y++) {
-      for (uint x=0; x != 64; x++) {
-        printf("%3d", gridIndex[y][x]);
-      }
-      printf("\n");
-    }
-  }
-
-  assert(numOccupiedBlocks > 0);
-
-  // if (threadIdx.x == 0 && threadIdx.y == 0) {
-    // printf("numOccupiedBlocks: %d\n", numOccupiedBlocks);
-  // }
-
-  // occupiedBlocks[i] holds index into gridIndex
-  uint threadNum = threadIdx.y * blockDim.x + threadIdx.x;
-  uint dataIdx = 4 * threadNum;
-  ushort row = (ushort)(dataIdx / 64);
-  ushort col = dataIdx % 64;
-  for (ushort c=0; c!=4; c++) {
-    uint idx = thread_data[c];
-    if (gridIndex[row][col+c] >= 0 && idx < MAX_OCCU_BLOCKS) {
-      occupiedBlocks[idx] = make_ushort2(row, col+c);
-    }
-  }
-  if (blockIdx.x == 0 && blockIdx.y == 0 && threadNum < numOccupiedBlocks) {
-    ushort2 blk = occupiedBlocks[threadNum];
-    printf("i: %d, occupiedBlock(adjusted): (%d, %d)\n", 
-        threadNum, blk.y + gridOffset.y, blk.x + gridOffset.x);
-  }
-
-  // occupiedBlocks, gridOffset are now initialized.
-  // iterate in phases of loading pixel data, then accumulating it
-  // how many timesteps should we use per occupiedBlock?
-  uint numTimesteps = (uint)(numOccupiedBlocks * stepsPerOccuBlock); 
-  uint3 outColor = make_uint3(0, 0, 0);
-  uint numAccum = 0;
-  uint nextBlock = 0; // the next block to load
-  uint blockBegin = 0;
-  uint nextLayer = 0; // index into pixelBuf first dimension
-  float2 sourceLoc; // location of the source in the viewport
-  uint2 sourceGridLoc; // location of the grid block
-  // Each iteration loads one layer of pixelBuf
-  curandState randState;
-  float2 targetLoc = make_float2(
-      blockIdx.x * blockDim.x + threadIdx.x + 0.5,
-      blockIdx.y * blockDim.y + threadIdx.y + 0.5);
-
-
-  while (nextBlock < numOccupiedBlocks) {
-    ushort2 blockCoord = occupiedBlocks[nextBlock++];
-    int x = (blockCoord.x + gridOffset.x) * BLOCK_DIM + threadIdx.x;
-    int y = (blockCoord.y + gridOffset.y) * BLOCK_DIM + threadIdx.y;
-    // wrap-around, safe with negative numbers
-    x = wrap_mod(x, inputWidth);
-    y = wrap_mod(y, inputHeight);
-    uint inIdx = y * inputWidth + x; 
-    pixelBuf[nextLayer][threadIdx.y][threadIdx.x] = image[inIdx];
-    nextLayer++;
-
-    if (nextLayer == numPixelLayers || nextBlock == numOccupiedBlocks) {
-      // process all blocks in [blockBegin, nextBlock)
-      // buffer is full.  start to unload
-      // is it safe to sync here?
-      __syncthreads();
-      float inc = 1.0 / (float)numTimesteps;
-      for (uint i=0; i != numTimesteps; i++) {
-        // add a little jitter to get irregular points along the path
-        float t = inc * (i + curand_normal(&randState) * 0.05);
-        t = max(0.0, min(t, 0.9999));
+    if (threadIdx.y < 4) {
+        // use one warp for each target square corner
+        // use warpSize timesteps to estimate full extent of receptive field
+        const float inc = 0.999 / warpSize;
+        int cornerIdx = threadIdx.x % 4;
+        int step = (threadIdx.y * blockDim.y + threadIdx.x) / 4;
+        float t = step * inc;
         assert(t < 1.0);
-        sourceLoc = linTransform(trajectoryBuffer, numMats, t, targetLoc);
-        // TODO: wrapping logic
-        sourceGridLoc = make_uint2(
-            to_block(sourceLoc.x) - gridOffset.x, 
-            to_block(sourceLoc.y) - gridOffset.y);
-        uint block = gridIndex[sourceGridLoc.y][sourceGridLoc.x];
-        if (block >= blockBegin && block < nextBlock) {
-          uint2 pixelOffset = make_uint2(
-              wrap_fmod(sourceLoc.x, BLOCK_DIM),
-              wrap_fmod(sourceLoc.y, BLOCK_DIM));
-          uint layer = block - blockBegin;
-          assert(layer < numPixelLayers); 
-          assert(pixelOffset.x < BLOCK_DIM);
-          assert(pixelOffset.y < BLOCK_DIM);
-          uchar3 thisColor = pixelBuf[layer][pixelOffset.y][pixelOffset.x];
-          /*
-          if (blockIdx.x == 3 && blockIdx.y == 3 && threadIdx.x == 0 && threadIdx.y == 0) {
-            printf("layer: %d, sourceLoc: %f, %f, pixelOffset: %d, %d\n", layer, 
-                sourceLoc.y, sourceLoc.x, pixelOffset.y, pixelOffset.x);
-          }
-          */
-          
-          outColor.x += thisColor.x;
-          outColor.y += thisColor.y;
-          outColor.z += thisColor.z;
-          numAccum += 1;
+        float2 corner = targetCorners[cornerIdx];
+        float2 source = linTransform(trajectoryBuffer, numMats, t, corner);
+        warp_min(source, 1, 4, lmin);
+        warp_max(source, 1, 4, lmax);
+        warp_min(lmin, 4, 16, gmin);
+
+        if (threadIdx.x == 0) {
+            atomicMin(&gridOffset.x, to_block(gmin.x));
+            atomicMin(&gridOffset.y, to_block(gmin.y));
         }
-      } // finished processing blocks [blockBegin, nextBlock) 
-      blockBegin = nextBlock;
-      nextLayer = 0;
     }
-  }
-  uint2 targetPixel = make_uint2(targetLoc.x, targetLoc.y);
-  assert(numOccupiedBlocks > 0);
-  assert(numAccum > 0);
-  // if (true) return;
-  if (targetPixel.x < viewportWidth && targetPixel.y < viewportHeight) {
-    uint outIdx = targetPixel.y * viewportWidth + targetPixel.x;
-    int cx = roundf((float)outColor.x / (float)numAccum);
-    int cy = roundf((float)outColor.y / (float)numAccum);
-    int cz = roundf((float)outColor.z / (float)numAccum);
-    if (blockIdx.x == 3 && blockIdx.y == 3) {
-      printf("color: %d %d %d\n", cx, cy, cz);
+    __syncthreads();
+
+    // TODO: delete
+    // if (threadId == 0) {
+      //   gridOffset = make_int2(0, 0);
+    // }
+    __syncthreads();
+
+    if (threadIdx.y < 4 && threadIdx.x % 4 == 0) {
+        // populate for first phase of gridIndex (0-1 occupancy mask)
+        // find the bounding grid for a timestep's source quadrilateral.
+        // use each of the 32 timesteps in the trajectory.
+        int grid_lmin_x = to_block(lmin.x) - gridOffset.x;
+        int grid_lmax_x = to_block(lmax.x) - gridOffset.x + 1;
+        int grid_lmin_y = to_block(lmin.y) - gridOffset.y;
+        int grid_lmax_y = to_block(lmax.y) - gridOffset.y + 1;
+        assert(grid_lmin_x < grid_lmax_x);
+        assert(grid_lmin_y < grid_lmax_y);
+        for (int y=grid_lmin_y; y != grid_lmax_y; ++y) {
+            for (int x=grid_lmin_x; x != grid_lmax_x; ++x) {
+                atomicExch(&gridIndex[y][x], 1);
+            }
+        }
     }
-    blurred[outIdx].x = cx;
-    blurred[outIdx].y = cy;
-    blurred[outIdx].z = cz;
+    
+    __syncthreads();
+
+    int thread_data[4];
+    uint elemId = threadId * 4;                         // 0:4096:4
+    uint sy = elemId / 64;                              // 0:64
+    uint sx = elemId % 64;                              // 0:64:4
+
+    for (uint c=0; c!=4; c++) {
+        thread_data[c] = gridIndex[sy][sx+c];
+    }
+    // __syncthreads();
+
+    using BlockReduce = cub::BlockReduce<int, BLOCK_DIM, cub::BLOCK_REDUCE_WARP_REDUCTIONS, 
+          BLOCK_DIM>;
+    __shared__ typename BlockReduce::TempStorage br_storage;
+    int maskSum = BlockReduce(br_storage).Sum(thread_data);
+
+    if (threadId == 0) {
+        numOccupiedBlocks = maskSum;
+        assert(numOccupiedBlocks > 0);
+    }
+
+    // __syncthreads();
+
+    for (int c=0; c!=4; c++) {
+        thread_data[c] = gridIndex[sy][sx+c];
+    }
+    // __syncthreads();
+
+    using BlockScan = cub::BlockScan<int, BLOCK_DIM, cub::BLOCK_SCAN_RAKING, BLOCK_DIM>;
+    __shared__ typename BlockScan::TempStorage temp_storage;
+    BlockScan(temp_storage).ExclusiveSum(thread_data, thread_data);
+
+    // __syncthreads();
+
+    for (int c=0; c!=4; c++) {
+        int mask = gridIndex[sy][sx+c];
+        gridIndex[sy][sx+c] = mask ? thread_data[c] : -1;
+    }
+
+    __syncthreads();
+    // only need to call __syncthreads() if temp_storage is reused
+
+    // occupiedBlocks[i] holds index into gridIndex
+    uint dataIdx = 4 * threadId;
+    uint y = dataIdx / 64;
+    uint x = dataIdx % 64;
+    for (uint xi = 0; xi != 4; xi++) {
+        int idx = gridIndex[y][x+xi];
+        if (idx >= 0 && idx < numOccupiedBlocks) {
+            occupiedBlocks[idx] = make_ushort2(x+xi, y);
+        }
+    }
+
+    // finished writing occupiedBlocks
+    __syncthreads();
     /*
-    blurred[outIdx].x = 255;
-    blurred[outIdx].y = 128;
-    blurred[outIdx].z = 39;
-    cx = max(0, min(cx, 255));
+       if (blockIdx.x == 0 && blockIdx.y == 0 && threadNum < numOccupiedBlocks) {
+       ushort2 blk = occupiedBlocks[threadNum];
+       printf("i: %d, occupiedBlock(adjusted): (%d, %d)\n", 
+       threadNum, blk.y + gridOffset.y, blk.x + gridOffset.x);
+       }
+     */
+
+    // occupiedBlocks, gridOffset are now initialized.
+    // iterate in phases of loading pixel data, then accumulating it
+    // how many timesteps should we use per occupiedBlock?
+    int numTimesteps = (int)(numOccupiedBlocks * stepsPerOccuBlock); 
+    float inc = 1.0 / (float)numTimesteps;
+    uint3 outColor = make_uint3(0, 0, 0);
+    uint numAccum = 0;
+    int begBlock = 0; // [begBlock, endBlock) defines current range
+    int endBlock = 0; // 
+    float2 sourceLoc; // location of the source in the viewport
+                      // Each iteration loads one layer of pixelBuf
+    curandState randState;
+    float2 targetLoc = make_float2(
+            blockIdx.x * blockDim.x + threadIdx.x + 0.5,
+            blockIdx.y * blockDim.y + threadIdx.y + 0.5);
+
+    /*
+       if (blockIdx.x == QUERY_X && blockIdx.y == QUERY_Y && threadIdx.x == 16 && threadIdx.y == 16) {
+       for (int b=0; b != numOccupiedBlocks; b++) {
+       printf("b: %d, bc: (%d, %d)\n", b, occupiedBlocks[b].x, occupiedBlocks[b].y);
+       }
+       }
+     */
+    // bitmask of layers initialized
+    // uint layerInitialized = 0;
+    // uint blockInitialized = 0;
+
+    /*
+    for (int l=0; l != numPixelLayers; l++) {
+        pixelBuf[l][threadIdx.y][threadIdx.x] = make_uchar3(255,255,255);
+    }
+    __syncthreads();
     */
-    // blurred[outIdx].x = static_cast<unsigned char>(cx);
-    // blurred[outIdx].y = outColor.y / numOccupiedBlocks;
-    // blurred[outIdx].z = outColor.z / numOccupiedBlocks;
-  }
+
+    while (endBlock < numOccupiedBlocks) {
+        // __syncthreads();
+        int layer = endBlock - begBlock;
+        assert(layer < numPixelLayers);
+
+        pixelBuf[layer][threadIdx.y][threadIdx.x] = get_source_pixel(
+                gridOffset, occupiedBlocks, 
+                endBlock, threadIdx.x, threadIdx.y, image, inputWidth, inputHeight);
+
+        // layerInitialized |= 1u<<layer;
+        // blockInitialized |= 1u<<endBlock;
+        // __syncthreads();
+
+        endBlock++;
+        if ((endBlock - begBlock) < numPixelLayers && endBlock < numOccupiedBlocks) {
+            continue;
+        }
+        /*
+           if (blockIdx.x == QUERY_X && blockIdx.y == QUERY_Y && threadIdx.x == 16 && threadIdx.y == 16) {
+           printf("bl: [%d, %d), bc: (%d, %d) n: %d\n", begBlock, endBlock,
+           blockCoord.x, blockCoord.y, numOccupiedBlocks);
+           }
+         */
+        __syncthreads();
+
+        // pixelBuf holds blocks [begBlock, endBlock), up to numPixelLayers layers 
+        for (int i=0; i != numTimesteps; i++) {
+            // add a little jitter to get irregular points along the path
+            float t = inc * (i + curand_normal(&randState) * 0.05);
+            t = max(0.0, min(t, 0.9999));
+            assert(t < 1.0);
+            sourceLoc = linTransform(trajectoryBuffer, numMats, t, targetLoc);
+
+            int block, px, py;
+            get_block_coords(gridOffset, gridIndex, sourceLoc, &block, &px, &py);
+
+            if (block < begBlock || block >= endBlock) continue;
+
+            int layer = block - begBlock;
+
+            assert(layer < numPixelLayers); 
+
+            /*
+            if (blockIdx.x == QUERY_X && blockIdx.y == QUERY_Y && threadIdx.x == 16 && 
+                    ! (layerInitialized & 1<<layer)) {
+                printf("layer %d uninitialized\n", layer);
+            }
+            */
+            // assert(layerInitialized & 1<<layer);
+            // assert(blockInitialized & 1<<block);
+            // assert(gridOffset.x == 0 && gridOffset.y == 0);
+            // if (! layerInitialized & 1<<layer) continue;
+
+            uchar3 thisColor = pixelBuf[layer][py][px];
+            // uchar3 thisColor = get_source_pixel(gridOffset, occupiedBlocks, block, px, py, 
+              //       image, inputWidth, inputHeight); 
+            // uchar3 thisColor = get_source_pixel_dumb(gridOffset, gridIndex,
+              //       occupiedBlocks, block, px, py, image, inputWidth, inputHeight); 
+
+            outColor.x += thisColor.x;
+            outColor.y += thisColor.y;
+            outColor.z += thisColor.z;
+            numAccum += 1;
+        } // finished processing blocks [begBlock, endBlock) 
+        begBlock = endBlock;
+    } // while (endBlock < numOccupiedBlocks
+
+    uint2 targetPixel = make_uint2(targetLoc.x, targetLoc.y);
+    // assert(numAccum > 0);
+    if (targetPixel.x < viewportWidth && targetPixel.y < viewportHeight) {
+        uint outIdx = targetPixel.y * viewportWidth + targetPixel.x;
+        assert(numAccum > 0);
+        blurred[outIdx].x = roundf((float)outColor.x / (float)numAccum);
+        blurred[outIdx].y = roundf((float)outColor.y / (float)numAccum);
+        blurred[outIdx].z = roundf((float)outColor.z / (float)numAccum);
+    }
+    /*
+    // TODO: remove
+    pixelBuf[0][threadIdx.y][threadIdx.x] = make_uchar3(255,0,0);
+    pixelBuf[1][threadIdx.y][threadIdx.x] = make_uchar3(0,255,0);
+    pixelBuf[2][threadIdx.y][threadIdx.x] = make_uchar3(0,0,255);
+
+    if (threadId < MAX_OCCU_BLOCKS) {
+        occupiedBlocks[threadId] = make_ushort2(0, 0);
+    }
+    if (threadIdx.x == 0 && threadIdx.y == 0) {
+        numOccupiedBlocks = 0; 
+    }
+    __syncthreads();
+    */
 }
 
 uint ceil_ratio(uint a, uint b) {
-  return (a + b - 1) / b;
+    return (a + b - 1) / b;
 }
 
 void motionBlur(
-    Homography *trajectory,
-    uint numMats,
-    const uchar3 *h_image,
-    uint inputWidth,
-    uint inputHeight,
-    uint numPixelLayers,
-    float stepsPerOccuBlock,
-    uchar3 *h_blurred,
-    uint viewportWidth,
-    uint viewportHeight) {
+        Homography *trajectory,
+        uint numMats,
+        const uchar3 *h_image,
+        uint inputWidth,
+        uint inputHeight,
+        uint numPixelLayers,
+        float stepsPerOccuBlock,
+        uchar3 *h_blurred,
+        uint viewportWidth,
+        uint viewportHeight) {
 
-  size_t inputSize = inputWidth * inputHeight * 3;
+    size_t inputSize = inputWidth * inputHeight * 3;
 
-  uchar3 *d_image = nullptr;
-  CUDA_CHECK(cudaMalloc((void **)&d_image, inputSize));
-  CUDA_CHECK(cudaMemcpy(d_image, h_image, inputSize, cudaMemcpyHostToDevice));
-  CUDA_CHECK(cudaDeviceSynchronize());
+    uchar3 *d_image = nullptr;
+    CUDA_CHECK(cudaMalloc((void **)&d_image, inputSize));
+    CUDA_CHECK(cudaMemcpy(d_image, h_image, inputSize, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaDeviceSynchronize());
 
-  size_t outputSize = viewportWidth * viewportHeight * 3; 
-  uchar3 *d_blurred = nullptr;
-  CUDA_CHECK(cudaMalloc((void **)&d_blurred, outputSize));
+    size_t outputSize = viewportWidth * viewportHeight * 3; 
+    uchar3 *d_blurred = nullptr;
+    CUDA_CHECK(cudaMalloc((void **)&d_blurred, outputSize));
 
-  assert(numMats <= MAX_TRAJECTORIES);
-  size_t trajectorySize = sizeof(Homography) * numMats;
-  CUDA_CHECK(cudaMemcpyToSymbol(trajectoryBuffer, trajectory, trajectorySize)); 
-  // CUDA_CHECK(cudaMalloc((void **)&d_trajectory, trajectorySize));
-  // CUDA_CHECK(cudaMemcpy(d_trajectory, trajectory, trajectorySize, cudaMemcpyHostToDevice));
+    assert(numMats <= MAX_TRAJECTORIES);
+    size_t trajectorySize = sizeof(Homography) * numMats;
+    CUDA_CHECK(cudaMemcpyToSymbol(trajectoryBuffer, trajectory, trajectorySize)); 
 
-  dim3 dimGrid = dim3(
-      ceil_ratio(viewportWidth, BLOCK_DIM), 
-      ceil_ratio(viewportHeight, BLOCK_DIM), 1);
+    dim3 dimGrid = dim3(
+            ceil_ratio(viewportWidth, BLOCK_DIM), 
+            ceil_ratio(viewportHeight, BLOCK_DIM), 1);
 
-  dim3 dimBlock = dim3(BLOCK_DIM, BLOCK_DIM, 1);
-  size_t sharedBytes = numPixelLayers * BLOCK_DIM * BLOCK_DIM * 3; 
-  motionBlur_kernel<<<dimGrid, dimBlock, sharedBytes>>>(
-      numMats, d_image, inputWidth, inputHeight, 
-      numPixelLayers, stepsPerOccuBlock, d_blurred,
-      viewportWidth, viewportHeight);
-  CUDA_CHECK(cudaDeviceSynchronize());
+    dim3 dimBlock = dim3(BLOCK_DIM, BLOCK_DIM, 1);
+    // size_t sharedBytes = numPixelLayers * BLOCK_DIM * BLOCK_DIM * 3; 
+    size_t sharedBytes = numPixelLayers * sizeof(PixelBlock); 
+    motionBlur_kernel<<<dimGrid, dimBlock, sharedBytes>>>(
+            numMats, d_image, inputWidth, inputHeight, 
+            numPixelLayers, stepsPerOccuBlock, d_blurred,
+            viewportWidth, viewportHeight);
 
-  CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaGetLastError());
 
-  CUDA_CHECK(cudaMemcpy(h_blurred, d_blurred, outputSize, cudaMemcpyDeviceToHost));
-  CUDA_CHECK(cudaDeviceSynchronize());
-  CUDA_CHECK(cudaFree(d_image));
-  CUDA_CHECK(cudaFree(d_blurred));
+    CUDA_CHECK(cudaMemcpy(h_blurred, d_blurred, outputSize, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaFree(d_image));
+    CUDA_CHECK(cudaFree(d_blurred));
 }
 
 

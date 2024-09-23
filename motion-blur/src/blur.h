@@ -1,9 +1,7 @@
 #ifndef _BLUR_H
 #define _BLUR_H
 
-#include <cuda_runtime.h>
-
-typedef float Homography[3][3];
+#include "dims.h"
 
 void motionBlur(
     Homography *trajectory,

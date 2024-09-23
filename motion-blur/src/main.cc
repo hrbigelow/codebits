@@ -5,16 +5,23 @@
 #include "stb/stb_image_write.h"
 
 #include "blur.h"
+#include "funcs.h"
 
 int main(int argc, char **argv) {
-  if (argc != 5) {
-    printf("Usage: %s <input_file> <viewportWidth> <viewportHeight> <output_file>\n", argv[0]);
+  if (argc != 7) {
+    printf("Usage: %s <input_file> <trajectory_file> <viewportWidth> <viewportHeight> "
+        "<steps_per_occu_block> <output_file>\n", argv[0]);
     return 1;
   }
   char *path = argv[1];
-  int viewportWidth = atoi(argv[2]);
-  int viewportHeight = atoi(argv[3]);
-  char *outPath = argv[4];
+  char *trajectory_file = argv[2];
+  int viewportWidth = atoi(argv[3]);
+  int viewportHeight = atoi(argv[4]);
+
+  // how many timesteps in the trajectory you want to take for each occupied block
+  // in the receptive field.
+  float stepsPerOccuBlock = atof(argv[5]);
+  char *outPath = argv[6];
 
   int w, h, c;
   uchar3 *h_image = (uchar3 *)stbi_load(path, &w, &h, &c, 0);
@@ -26,28 +33,18 @@ int main(int argc, char **argv) {
   // threads per SM
   uint numPixelLayers = 8;
 
-  // how many timesteps in the trajectory you want to take for each occupied block
-  // in the receptive field.
-  float stepsPerOccuBlock = 3.0;  
 
   // trajectory
-  uint numMats = 32;
-  Homography trajectory[32];
-  for (uint i=0; i != numMats; i++) {
-    for (uint j=0; j!=3; j++) {
-      for (uint k=0; k!=3; k++) {
-        trajectory[i][j][k] = 0.0;
-      }
-    }
-    trajectory[i][0][0] = 1.0 + 0.1 * i;
-    trajectory[i][1][1] = 1.0 - 0.1 * i;
-    trajectory[i][2][2] = 1.0;
-  }
+  Homography *trajectory;
+  uint numMats;
+  loadHomography(trajectory_file, &trajectory, &numMats);
+
   motionBlur(trajectory, numMats, h_image, w, h, numPixelLayers, stepsPerOccuBlock, h_blurred,
       viewportWidth, viewportHeight);
 
   int channels = 3;
-  stbi_write_png(outPath, viewportWidth, viewportHeight, channels, h_blurred, outputSize);
+  unsigned stride_in_bytes = viewportWidth * 3;
+  stbi_write_png(outPath, viewportWidth, viewportHeight, channels, h_blurred, stride_in_bytes);
 
   free(h_blurred);
   free(h_image);

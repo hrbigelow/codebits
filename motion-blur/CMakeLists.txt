@@ -7,7 +7,7 @@ include(FindCUDAToolkit)
 
 find_package(Sail REQUIRED)
 
-add_executable(${PROJECT_NAME} src/main.cc src/blur.cu)
+add_executable(${PROJECT_NAME} src/funcs.cc src/main.cc src/blur.cu)
 
 set(CUDA_NVCC_FLAGS_DEBUG "-G;-lineinfo;-rdynamic;-g")
 
