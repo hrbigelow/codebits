@@ -48,24 +48,11 @@ __global__ void motionBlur_kernel(
     float yend = ybeg + blockDim.y - 1.0;
     float2 targetCorners[4] = { { xbeg, ybeg }, { xbeg, yend }, { xend, ybeg }, { xend, yend } };
 
-    if (threadIdx.y < FIELD_BLOCKS && threadIdx.x < FIELD_BLOCKS){
-        for (int y=threadIdx.y; y<FIELD_BLOCKS; y+=blockDim.y) {
-            for (int x=threadIdx.x; x<FIELD_BLOCKS; x+=blockDim.x) {
-                gridIndex[y][x] = 0;
-            }
+    for (int y=threadIdx.y; y<FIELD_BLOCKS; y+=blockDim.y) {
+        for (int x=threadIdx.x; x<FIELD_BLOCKS; x+=blockDim.x) {
+            gridIndex[y][x] = 0;
         }
     }
-
-    /*
-    if (threadId == 0){
-        gridOffset = make_int2(10000, 10000); // large initial seed values for minimization
-        for (int y=0; y != FIELD_BLOCKS; y++) {
-            for (int x=0; x != FIELD_BLOCKS; x++) {
-                gridIndex[y][x] = 0;
-            }
-        }
-    }
-    */
     __syncthreads();
 
     /*
@@ -87,7 +74,7 @@ __global__ void motionBlur_kernel(
         // use warpSize timesteps to estimate full extent of receptive field
         const float inc = 0.999 / warpSize;
         int cornerIdx = threadIdx.x % 4;
-        int step = (threadIdx.y * blockDim.y + threadIdx.x) / 4;
+        int step = threadId / 4;
         float t = step * inc;
         assert(t < 1.0);
         float2 corner = targetCorners[cornerIdx];
@@ -95,18 +82,14 @@ __global__ void motionBlur_kernel(
         warp_min(source, 1, 4, lmin);
         warp_max(source, 1, 4, lmax);
         warp_min(lmin, 4, 16, gmin);
-
-        if (threadIdx.x == 0) {
-            atomicMin(&gridOffset.x, to_block(gmin.x));
-            atomicMin(&gridOffset.y, to_block(gmin.y));
-        }
     }
     __syncthreads();
 
-    // TODO: delete
-    // if (threadId == 0) {
-      //   gridOffset = make_int2(0, 0);
-    // }
+    if (threadIdx.y < 4 && threadIdx.x == 0) {
+        atomicMin(&gridOffset.x, to_block(gmin.x));
+        atomicMin(&gridOffset.y, to_block(gmin.y));
+    }
+
     __syncthreads();
 
     if (threadIdx.y < 4 && threadIdx.x % 4 == 0) {
@@ -128,40 +111,54 @@ __global__ void motionBlur_kernel(
     
     __syncthreads();
 
-    int thread_data[4];
-    uint elemId = threadId * 4;                         // 0:4096:4
-    uint sy = elemId / 64;                              // 0:64
-    uint sx = elemId % 64;                              // 0:64:4
+    int thread_data[NUM_CELLS_PER_THREAD];
+    uint elemId = threadId * NUM_CELLS_PER_THREAD;
+    uint sy = elemId / FIELD_BLOCKS;                    // 0:FIELD_BLOCKS
+    uint sx = elemId % FIELD_BLOCKS;                    // 0:FIELD_BLOCKS:4
+    // assert(sy == threadIdx.y);
+    // assert(sx == threadIdx.x);
 
-    for (uint c=0; c!=4; c++) {
+    for (uint c=0; c!=NUM_CELLS_PER_THREAD; c++) {
         thread_data[c] = gridIndex[sy][sx+c];
     }
-    // __syncthreads();
 
     using BlockReduce = cub::BlockReduce<int, BLOCK_DIM, cub::BLOCK_REDUCE_WARP_REDUCTIONS, 
           BLOCK_DIM>;
     __shared__ typename BlockReduce::TempStorage br_storage;
     int maskSum = BlockReduce(br_storage).Sum(thread_data);
 
+    int dumb_sum = 0;
+    /*
+    for (sx=0; sx!=32; sx++) {
+        for (sy=0; sy!=32; sy++) {
+            dumb_sum += gridIndex[sy][sx];
+        }
+    }
+    */
+
     if (threadId == 0) {
         numOccupiedBlocks = maskSum;
-        assert(numOccupiedBlocks > 0);
+        if (maskSum == 0) {
+            printf("empty block: dumb_sum: %d\n", dumb_sum);
+        }
+        // assert(numOccupiedBlocks > 0);
     }
 
-    // __syncthreads();
+    __syncthreads();
 
-    for (int c=0; c!=4; c++) {
+    if (numOccupiedBlocks == 0) {
+        return;
+    }
+
+    for (int c=0; c!=NUM_CELLS_PER_THREAD; c++) {
         thread_data[c] = gridIndex[sy][sx+c];
     }
-    // __syncthreads();
 
     using BlockScan = cub::BlockScan<int, BLOCK_DIM, cub::BLOCK_SCAN_RAKING, BLOCK_DIM>;
     __shared__ typename BlockScan::TempStorage temp_storage;
     BlockScan(temp_storage).ExclusiveSum(thread_data, thread_data);
 
-    // __syncthreads();
-
-    for (int c=0; c!=4; c++) {
+    for (int c=0; c!=NUM_CELLS_PER_THREAD; c++) {
         int mask = gridIndex[sy][sx+c];
         gridIndex[sy][sx+c] = mask ? thread_data[c] : -1;
     }
@@ -170,13 +167,10 @@ __global__ void motionBlur_kernel(
     // only need to call __syncthreads() if temp_storage is reused
 
     // occupiedBlocks[i] holds index into gridIndex
-    uint dataIdx = 4 * threadId;
-    uint y = dataIdx / 64;
-    uint x = dataIdx % 64;
-    for (uint xi = 0; xi != 4; xi++) {
-        int idx = gridIndex[y][x+xi];
+    for (int c=0; c!=NUM_CELLS_PER_THREAD; c++) {
+        int idx = gridIndex[sy][sx+c];
         if (idx >= 0 && idx < numOccupiedBlocks) {
-            occupiedBlocks[idx] = make_ushort2(x+xi, y);
+            occupiedBlocks[idx] = make_ushort2(sx+c, sy);
         }
     }
 

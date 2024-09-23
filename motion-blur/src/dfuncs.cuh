@@ -35,7 +35,7 @@ __device__ float2 linTransform(
 }
 
 __inline__ __device__ void warp_min(float2 val, int beg_offset, int end_offset, float2 &min_val) {
-    // set min_val to the minimum of  values for lanes 
+    // set min_val to the minimum of values for lanes 
     min_val = val;
     float2 other;
     for (int offset = beg_offset; offset < end_offset; offset<<=1) {
@@ -99,8 +99,8 @@ __inline__ __device__ uchar3 get_source_pixel_dumb(
     // like get_source_pixel, but uses grid_index instead of occu_blocks to
     // find the block coordinate
     ushort2 coord = make_ushort2(1024, 1024);
-    for (int y=0; y != 64; y++) {
-        for (int x=0; x != 64; x++) {
+    for (int y=0; y != FIELD_BLOCKS; y++) {
+        for (int x=0; x != FIELD_BLOCKS; x++) {
             if (grid_index[y][x] == block) {
                 coord = make_ushort2(x, y);
                 break;
@@ -138,6 +138,5 @@ __inline__ __device__ void get_block_coords(
     *px = wrap_fmod(source_loc.x, BLOCK_DIM);
     *py = wrap_fmod(source_loc.y, BLOCK_DIM);
 }
-
 
 #endif // _DFUNCS_H
