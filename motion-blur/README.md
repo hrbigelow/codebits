@@ -66,19 +66,25 @@ sampling artifacts where the blur crosses the image boundary.
 All trajectories are defined relative to given reference point `ref_point_x,
 ref_point_y`.  This doesn't affect translation trajectories, but it does affect
 rotation and zoom, for example.  Mathematically, this is achieved by replacing every
-given matrix `M` with $T(-x,-y) M T(x,y)$, where T(x, y) is:
+given matrix `M` with:
 
 $$
+\begin{bmatrix}
+1 & 0 & -x \\
+0 & 1 & -y \\
+0 & 0 & 1
+\end{bmatrix}
+\begin{bmatrix}
+m_{00} & m_{01} & m_{02} \\
+m_{10} & m_{11} & m_{12} \\
+m_{20} & m_{21} & m_{22} \\
+\end{bmatrix}
 \begin{bmatrix}
 1 & 0 & x \\
 0 & 1 & y \\
 0 & 0 & 1
 \end{bmatrix}
 $$
-
-
-
-
 
 
 
