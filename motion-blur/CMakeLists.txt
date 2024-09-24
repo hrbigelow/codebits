@@ -1,6 +1,4 @@
 cmake_minimum_required(VERSION 3.23.1 FATAL_ERROR)
-# include(CheckLanguage)
-# check_language(CUDA)
 
 project(motion_blur LANGUAGES CXX CUDA)
 include(FindCUDAToolkit)

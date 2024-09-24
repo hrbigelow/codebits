@@ -22,19 +22,63 @@ trajectory as a series of matrices.  Once defined, these matrices define a piece
 linear motion path for each source pixel in the image.  The kernel samples locations
 from this motion path at regular intervals.
 
-## Command-Line
+## Building
 
 ```bash
-$ motion_blur
-Usage: motion_blur \
-    <input_file> <trajectory_file> \
-    <viewportWidth> <viewportHeight> \
-    <steps_per_occu_block> <output_file>
+mkdir build
+cd build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+cmake --build .
+
+./motion_blur
+Usage: ./motion_blur <input_file> <trajectory_file> <viewport_width> <viewport_height> <steps_per_occu_block> <ref_point_x> <ref_point_y> <output_file>
+./motion_blur input.png ../test/u-shaped.txt 3140 2060 40.0 1400 800 ~/blurred-input.png
 ```
 
+See several example trajectories in `test` directory.  The format for these is:
+
+```
+<num_matrices>
+mat1-row1
+mat1-row2
+mat1-row3
+mat2-row1
+...
+...
+```
+
+The remaining lines are rows of each matrix, each row containing three
+space-separated numbers.
+
+The trajectory file defines a piecewise-linear trajectory of `N-1` pieces for `N`
+matrices.  The system can handle up to 64 matrices for a smoother trajectory.
+Viewing this piecewise-linear trajectory as a single path, the system samples
+`steps_per_occu_block * occu_blocks` nearly evenly-spaced points along this path.
+This quantity is a cheap estimate of a given target location's total path length.
+Note that certain trajectories like rotation result in different locations in the
+image having different length trajectories.  The program thus samples longer
+trajectories with more points so as to maintain fidelity.
+
+The input image may be of any dimensions, and it will be treated as an infinite
+canvas that wraps in both x and y directions.  This will of course cause unnatural
+sampling artifacts where the blur crosses the image boundary.
+
+All trajectories are defined relative to given reference point `ref_point_x,
+ref_point_y`.  This doesn't affect translation trajectories, but it does affect
+rotation and zoom, for example.  Mathematically, this is achieved by replacing every
+given matrix `M` with $T(-x,-y) M T(x,y)$, where T(x, y) is:
+
+$$
+\begin{bmatrix}
+1 & 0 & x \\
+0 & 1 & y \\
+0 & 0 & 1
+\end{bmatrix}
+$$
 
 
 
-The user inputs a PNG image (any dimensions are acceptable), a
-sequence of N (<= 64) homography matrices, and a parameter `steps_per_occu_block`
-which gives the number of steps 
+
+
+
+
