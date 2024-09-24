@@ -13,10 +13,12 @@
 #define NUM_CELLS_PER_THREAD (uint)(FIELD_BLOCKS_PER_THREAD * FIELD_BLOCKS_PER_THREAD)
 
 // maximum number of occupied blocks
-#define MAX_OCCU_BLOCKS 512
+#define MAX_OCCU_BLOCKS 1024
+
+// #define USE_COMP4 1
+#define USE_COMP4 0
 
 typedef float Homography[3][3];
-typedef uchar3 PixelBlock[BLOCK_DIM][BLOCK_DIM];
 typedef int GridIndex[FIELD_BLOCKS][FIELD_BLOCKS];
 
 #endif // _DIMS_H

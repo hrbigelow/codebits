@@ -83,6 +83,7 @@ __global__ void motionBlur_kernel(
         float t = step * inc;
         assert(t < 1.0);
         float2 source = linTransform(trajectoryBuffer, numMats, t, targetCorners[cornerIdx]);
+        // printf("source: %f, %f\n", source.x, source.y);
         warp_min(source, 1, 4, lmin);
         warp_max(source, 1, 4, lmax);
         warp_min(lmin, 4, 16, gmin);
@@ -106,19 +107,17 @@ __global__ void motionBlur_kernel(
         assert(grid_lmin_y < grid_lmax_y);
         for (int y=grid_lmin_y; y != grid_lmax_y; ++y) {
             for (int x=grid_lmin_x; x != grid_lmax_x; ++x) {
-                atomicExch(&gridIndex[y][x], 1);
+                gridIndex[y][x] = 1;
+                // atomicExch(&gridIndex[y][x], 1);
             }
         }
     }
-    
     __syncthreads();
 
     int thread_data[NUM_CELLS_PER_THREAD];
     uint elemId = threadId * NUM_CELLS_PER_THREAD;
     uint sy = elemId / FIELD_BLOCKS;                    // 0:FIELD_BLOCKS
     uint sx = elemId % FIELD_BLOCKS;                    // 0:FIELD_BLOCKS:4
-    // assert(sy == threadIdx.y);
-    // assert(sx == threadIdx.x);
 
     for (uint c=0; c!=NUM_CELLS_PER_THREAD; c++) {
         thread_data[c] = gridIndex[sy][sx+c];
@@ -132,7 +131,9 @@ __global__ void motionBlur_kernel(
     if (threadId == 0) {
         numOccupiedBlocks = maskSum;
         assert(numOccupiedBlocks > 0);
+        assert(numOccupiedBlocks < MAX_OCCU_BLOCKS); 
     }
+
 
     __syncthreads();
 
@@ -184,20 +185,15 @@ __global__ void motionBlur_kernel(
         int layer = endBlock - begBlock;
         assert(layer < numPixelLayers);
 
-        pixelBuf[layer][threadIdx.y][threadIdx.x] = get_source_pixel(
-                gridOffset, occupiedBlocks, 
-                endBlock, threadIdx.x, threadIdx.y, image, inputWidth, inputHeight);
+        int2 source = get_source_coords(gridOffset, occupiedBlocks, endBlock,
+            threadIdx.x, threadIdx.y, inputWidth, inputHeight);
+        pixelBuf[layer][threadIdx.y][threadIdx.x] = get_source_pixel(source, image, inputWidth);
 
         endBlock++;
         if ((endBlock - begBlock) < numPixelLayers && endBlock < numOccupiedBlocks) {
             continue;
         }
-        /*
-           if (blockIdx.x == QUERY_X && blockIdx.y == QUERY_Y && threadIdx.x == 16 && threadIdx.y == 16) {
-           printf("bl: [%d, %d), bc: (%d, %d) n: %d\n", begBlock, endBlock,
-           blockCoord.x, blockCoord.y, numOccupiedBlocks);
-           }
-         */
+
         __syncthreads();
 
         // pixelBuf holds blocks [begBlock, endBlock), up to numPixelLayers layers 
@@ -216,12 +212,10 @@ __global__ void motionBlur_kernel(
             int layer = block - begBlock;
 
             assert(layer < numPixelLayers); 
+            assert(px < BLOCK_DIM);
+            assert(py < BLOCK_DIM);
 
-            uchar3 thisColor = pixelBuf[layer][py][px];
-            // uchar3 thisColor = get_source_pixel(gridOffset, occupiedBlocks, block, px, py, 
-              //       image, inputWidth, inputHeight); 
-            // uchar3 thisColor = get_source_pixel_dumb(gridOffset, gridIndex,
-              //       occupiedBlocks, block, px, py, image, inputWidth, inputHeight); 
+            Pixel thisColor = pixelBuf[layer][py][px];
 
             outColor.x += thisColor.x;
             outColor.y += thisColor.y;
@@ -235,7 +229,7 @@ __global__ void motionBlur_kernel(
     // assert(numAccum > 0);
     if (targetPixel.x < viewportWidth && targetPixel.y < viewportHeight) {
         uint outIdx = targetPixel.y * viewportWidth + targetPixel.x;
-        assert(numAccum > 0);
+        // assert(numAccum > 0);
         blurred[outIdx].x = roundf((float)outColor.x / (float)numAccum);
         blurred[outIdx].y = roundf((float)outColor.y / (float)numAccum);
         blurred[outIdx].z = roundf((float)outColor.z / (float)numAccum);
@@ -278,7 +272,6 @@ void motionBlur(
             ceil_ratio(viewportHeight, BLOCK_DIM), 1);
 
     dim3 dimBlock = dim3(BLOCK_DIM, BLOCK_DIM, 1);
-    // size_t sharedBytes = numPixelLayers * BLOCK_DIM * BLOCK_DIM * 3; 
     size_t sharedBytes = numPixelLayers * sizeof(PixelBlock); 
     motionBlur_kernel<<<dimGrid, dimBlock, sharedBytes>>>(
             numMats, d_image, inputWidth, inputHeight, 

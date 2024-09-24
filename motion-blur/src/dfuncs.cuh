@@ -3,7 +3,14 @@
 
 #include "dims.h"
 
-typedef float Homography[3][3];
+
+#if USE_COMP4 == 1
+    typedef uchar4 Pixel;
+#else
+    typedef uchar3 Pixel;
+#endif
+
+typedef Pixel PixelBlock[BLOCK_DIM][BLOCK_DIM];
 
 __device__ float2 transform(const Homography *mats, unsigned int t, float2 coord)
 {
@@ -14,6 +21,7 @@ __device__ float2 transform(const Homography *mats, unsigned int t, float2 coord
     float xs = h[0][0] * x + h[0][1] * y + h[0][2];
     float ys = h[1][0] * x + h[1][1] * y + h[1][2];
     float ws = h[2][0] * x + h[2][1] * y + h[2][2];
+    assert(ws != 0.0);
     return make_float2(xs / ws, ys / ws);
 }
 
@@ -84,43 +92,13 @@ __inline__ __device__ int2 get_source_coords(
     return make_int2(sx, sy);
 }
 
-__inline__ __device__ uchar3 get_source_pixel(
-        const int2 &grid_offset, const ushort2 *occu_blocks, 
-        int block, int px, int py, const uchar3 *image, int width, int height) {
-    // get the source pixel 
-    int2 src = get_source_coords(grid_offset, occu_blocks, block, px, py, width, height);
+__inline__ __device__ Pixel get_source_pixel(int2 src, const uchar3 *image, int width) {
     uint idx = src.y * width + src.x; 
+#if USE_COMP4 == 1 
+    return make_uchar4(image[idx].x, image[idx].y, image[idx].z, 0);
+#else
     return make_uchar3(image[idx].x, image[idx].y, image[idx].z);
-}
-
-__inline__ __device__ uchar3 get_source_pixel_dumb(
-        const int2 &grid_offset, const GridIndex &grid_index, const ushort2 *occu_blocks,
-        int block, int px, int py, const uchar3 *image, int width, int height) {
-    // like get_source_pixel, but uses grid_index instead of occu_blocks to
-    // find the block coordinate
-    ushort2 coord = make_ushort2(1024, 1024);
-    for (int y=0; y != FIELD_BLOCKS; y++) {
-        for (int x=0; x != FIELD_BLOCKS; x++) {
-            if (grid_index[y][x] == block) {
-                coord = make_ushort2(x, y);
-                break;
-            }
-        }
-    }
-    if (occu_blocks[block].x != coord.x || occu_blocks[block].y != coord.y) {
-        printf("block: %d, occu: %d, coord: %d\n",
-                block, occu_blocks[block].x, coord.x);
-    }
-    // assert(occu_blocks[block].x == coord.x);
-    // assert(occu_blocks[block].y == coord.y);
-    // ushort2 coord = occu_blocks[block];
-    int sx = (coord.x + grid_offset.x) * BLOCK_DIM + px;
-    int sy = (coord.y + grid_offset.y) * BLOCK_DIM + py;
-    // wrap-around, safe with negative numbers
-    sx = wrap_mod(sx, width);
-    sy = wrap_mod(sy, height);
-    uint inIdx = sy * width + sx; 
-    return make_uchar3(image[inIdx].x, image[inIdx].y, image[inIdx].z);
+#endif
 }
 
 __inline__ __device__ void get_block_coords(

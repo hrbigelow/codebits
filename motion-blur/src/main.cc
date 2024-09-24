@@ -8,9 +8,9 @@
 #include "funcs.h"
 
 int main(int argc, char **argv) {
-  if (argc != 7) {
-    printf("Usage: %s <input_file> <trajectory_file> <viewportWidth> <viewportHeight> "
-        "<steps_per_occu_block> <output_file>\n", argv[0]);
+  if (argc != 9) {
+    printf("Usage: %s <input_file> <trajectory_file> <viewport_width> <viewport_height> "
+        "<steps_per_occu_block> <ref_point_x> <ref_point_y> <output_file>\n", argv[0]);
     return 1;
   }
   char *path = argv[1];
@@ -21,7 +21,9 @@ int main(int argc, char **argv) {
   // how many timesteps in the trajectory you want to take for each occupied block
   // in the receptive field.
   float stepsPerOccuBlock = atof(argv[5]);
-  char *outPath = argv[6];
+  float ref_point_x = atof(argv[6]);
+  float ref_point_y = atof(argv[7]);
+  char *outPath = argv[8];
 
   int w, h, c;
   uchar3 *h_image = (uchar3 *)stbi_load(path, &w, &h, &c, 0);
@@ -38,6 +40,13 @@ int main(int argc, char **argv) {
   Homography *trajectory;
   uint numMats;
   loadHomography(trajectory_file, &trajectory, &numMats);
+  
+  for (int m=0; m!= numMats; m++){
+    center_on_ref(trajectory[m], ref_point_x, ref_point_y);
+    print_mat(trajectory[m]);
+    printf("\n");
+  }
+
 
   motionBlur(trajectory, numMats, h_image, w, h, numPixelLayers, stepsPerOccuBlock, h_blurred,
       viewportWidth, viewportHeight);
