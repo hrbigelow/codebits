@@ -1,6 +1,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <cmath>
 #include "blur.h"
 
 // Function to load matrices from the file
@@ -51,13 +52,33 @@ void matmul(const Homography &mat1, const Homography &mat2, Homography &result) 
   }
 }
 
-
 void center_on_ref(Homography &mat, float ref_point_x, float ref_point_y) {
   // return a modified homography matrix "about the point" (ref_point_x, ref_point_y)
   Homography tx1 = { { 1, 0, -ref_point_x }, { 0, 1, -ref_point_y }, { 0, 0, 1 } };
   Homography tx2 = { { 1, 0, ref_point_x }, { 0, 1, ref_point_y }, { 0, 0, 1 } };
   matmul(mat, tx1, mat);
   matmul(tx2, mat, mat);
+}
+
+void make_homography(
+    float tx, float ty, float sx, float sy, float deg, float sk, float px, float py, 
+    float ref_point_x, float ref_point_y, Homography &out) {
+    // create a homography matrix with the desired translation, scale, rotation
+    // (degrees), projection, about (ref_point_x, ref_point_y), storing in `out`
+    float rad = deg * (2.0 * M_PI) / 360.0;
+    float cos_theta = std::cos(rad);
+    float sin_theta = std::sin(rad);
+    Homography P = { { 1, 0, 0 }, { 0, 1, 0 }, { px, py, 1 } };
+    Homography T = { { 1, 0, tx }, { 0, 1, ty }, { 0, 0, 1 } };
+    Homography R = { { cos_theta, -sin_theta, 0 }, { sin_theta, cos_theta, 0 }, { 0, 0, 1 } };
+    Homography K = { { 1, sk, 0 }, { 0, 1, 1 }, { 0, 0, 1 } };
+    Homography S = { { sx, 0, 0 }, { 0, sy, 0 }, { 0, 0, 1 } };
+
+    matmul(P, T, out);
+    matmul(R, out, out);
+    matmul(K, out, out);
+    matmul(S, out, out);
+    center_on_ref(out, ref_point_x, ref_point_y);
 }
 
 

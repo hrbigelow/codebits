@@ -2,8 +2,7 @@
 #define _DIMS_H
 #include <cuda_runtime.h>
 
-#define QUERY_X 27
-#define QUERY_Y 5
+#define MAX_HOMOGRAPHY_MATS 64 
 
 #define BLOCK_DIM 32
 // maximum square side in pixels

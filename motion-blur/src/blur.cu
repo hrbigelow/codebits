@@ -3,12 +3,12 @@
 #include <cub/cub.cuh>
 #include <cub/block/block_scan.cuh>
 #include <curand_kernel.h>
+#include <chrono>
 #include "blur.h"
 #include "dfuncs.cuh"
 #include "tools.h"
 
-#define MAX_TRAJECTORIES 64 
-__constant__ Homography trajectoryBuffer[MAX_TRAJECTORIES];
+__constant__ Homography trajectoryBuffer[MAX_HOMOGRAPHY_MATS];
 
 __global__ void motionBlur_kernel(
         uint numMats,
@@ -41,13 +41,6 @@ __global__ void motionBlur_kernel(
     __shared__ ushort2 occupiedBlocks[MAX_OCCU_BLOCKS];
     __shared__ int numOccupiedBlocks;
 
-    // 1. Determine grid bounding box (in global viewport grid indices)
-    float xbeg = blockIdx.x * blockDim.x + 0.5;
-    float ybeg = blockIdx.y * blockDim.y + 0.5;
-    float xend = xbeg + blockDim.x - 1.0;
-    float yend = ybeg + blockDim.y - 1.0;
-    float2 targetCorners[4] = { { xbeg, ybeg }, { xbeg, yend }, { xend, ybeg }, { xend, yend } };
-
     for (int y=threadIdx.y; y<FIELD_BLOCKS; y+=blockDim.y) {
         for (int x=threadIdx.x; x<FIELD_BLOCKS; x+=blockDim.x) {
             gridIndex[y][x] = 0;
@@ -72,16 +65,23 @@ __global__ void motionBlur_kernel(
        gridRect
        gridIndex
      */
+
+    // 1. Determine grid bounding box (in global viewport grid indices)
+    float xbeg = blockIdx.x * blockDim.x;
+    float ybeg = blockIdx.y * blockDim.y;
+    float xend = xbeg + blockDim.x;
+    float yend = ybeg + blockDim.y;
+    float2 targetCorners[4] = { { xbeg, ybeg }, { xbeg, yend }, { xend, ybeg }, { xend, yend } };
     float2 lmin, lmax, gmin;
 
     if (threadId < 128) {
         // use one warp for each target square corner
         // use warpSize timesteps to estimate full extent of receptive field
-        const float inc = 0.999 / warpSize;
+        const float inc = (float)numMats / (warpSize - 1);
         int cornerIdx = threadId % 4;
         int step = threadId / 4;
         float t = step * inc;
-        assert(t < 1.0);
+        // assert(t < 1.0);
         float2 source = linTransform(trajectoryBuffer, numMats, t, targetCorners[cornerIdx]);
         // printf("source: %f, %f\n", source.x, source.y);
         warp_min(source, 1, 4, lmin);
@@ -103,8 +103,8 @@ __global__ void motionBlur_kernel(
         int grid_lmax_x = to_block(lmax.x) - gridOffset.x + 1;
         int grid_lmin_y = to_block(lmin.y) - gridOffset.y;
         int grid_lmax_y = to_block(lmax.y) - gridOffset.y + 1;
-        assert(grid_lmin_x < grid_lmax_x);
-        assert(grid_lmin_y < grid_lmax_y);
+        // assert(grid_lmin_x < grid_lmax_x);
+        // assert(grid_lmin_y < grid_lmax_y);
         for (int y=grid_lmin_y; y != grid_lmax_y; ++y) {
             for (int x=grid_lmin_x; x != grid_lmax_x; ++x) {
                 gridIndex[y][x] = 1;
@@ -130,8 +130,8 @@ __global__ void motionBlur_kernel(
 
     if (threadId == 0) {
         numOccupiedBlocks = maskSum;
-        assert(numOccupiedBlocks > 0);
-        assert(numOccupiedBlocks < MAX_OCCU_BLOCKS); 
+        // assert(numOccupiedBlocks > 0);
+        // assert(numOccupiedBlocks < MAX_OCCU_BLOCKS); 
     }
 
 
@@ -168,7 +168,12 @@ __global__ void motionBlur_kernel(
     // iterate in phases of loading pixel data, then accumulating it
     // how many timesteps should we use per occupiedBlock?
     int numTimesteps = (int)(numOccupiedBlocks * stepsPerOccuBlock); 
-    float inc = 1.0 / (float)numTimesteps;
+
+    //if (threadId == 0) {
+        //printf("numTimesteps: %d\n", numTimesteps);
+    //}
+
+    float inc = (float)numMats / (float)(numTimesteps - 1);
     uint3 outColor = make_uint3(0, 0, 0);
     uint numAccum = 0;
     int begBlock = 0; // [begBlock, endBlock) defines current range
@@ -176,14 +181,15 @@ __global__ void motionBlur_kernel(
     float2 sourceLoc; // location of the source in the viewport
                       // Each iteration loads one layer of pixelBuf
     curandState randState;
+    curand_init(0, threadId, 0, &randState);
+
     float2 targetLoc = make_float2(
             blockIdx.x * blockDim.x + threadIdx.x + 0.5,
             blockIdx.y * blockDim.y + threadIdx.y + 0.5);
 
     while (endBlock < numOccupiedBlocks) {
-        // __syncthreads();
         int layer = endBlock - begBlock;
-        assert(layer < numPixelLayers);
+        // assert(layer < numPixelLayers);
 
         int2 source = get_source_coords(gridOffset, occupiedBlocks, endBlock,
             threadIdx.x, threadIdx.y, inputWidth, inputHeight);
@@ -200,8 +206,6 @@ __global__ void motionBlur_kernel(
         for (int i=0; i != numTimesteps; i++) {
             // add a little jitter to get irregular points along the path
             float t = inc * (i + curand_normal(&randState) * 0.05);
-            t = max(0.0, min(t, 0.9999));
-            assert(t < 1.0);
             sourceLoc = linTransform(trajectoryBuffer, numMats, t, targetLoc);
 
             int block, px, py;
@@ -211,9 +215,7 @@ __global__ void motionBlur_kernel(
 
             int layer = block - begBlock;
 
-            assert(layer < numPixelLayers); 
-            assert(px < BLOCK_DIM);
-            assert(py < BLOCK_DIM);
+            // assert(layer < numPixelLayers); 
 
             Pixel thisColor = pixelBuf[layer][py][px];
 
@@ -263,7 +265,7 @@ void motionBlur(
     uchar3 *d_blurred = nullptr;
     CUDA_CHECK(cudaMalloc((void **)&d_blurred, outputSize));
 
-    assert(numMats <= MAX_TRAJECTORIES);
+    assert(numMats <= MAX_HOMOGRAPHY_MATS);
     size_t trajectorySize = sizeof(Homography) * numMats;
     CUDA_CHECK(cudaMemcpyToSymbol(trajectoryBuffer, trajectory, trajectorySize)); 
 
@@ -273,12 +275,18 @@ void motionBlur(
 
     dim3 dimBlock = dim3(BLOCK_DIM, BLOCK_DIM, 1);
     size_t sharedBytes = numPixelLayers * sizeof(PixelBlock); 
+
+    auto start_time = std::chrono::high_resolution_clock::now();
     motionBlur_kernel<<<dimGrid, dimBlock, sharedBytes>>>(
             numMats, d_image, inputWidth, inputHeight, 
             numPixelLayers, stepsPerOccuBlock, d_blurred,
             viewportWidth, viewportHeight);
 
     CUDA_CHECK(cudaDeviceSynchronize());
+    auto end_time = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = end_time - start_time;
+    printf("Rendering time (seconds): %f\n", elapsed.count());
+
     CUDA_CHECK(cudaGetLastError());
 
     CUDA_CHECK(cudaMemcpy(h_blurred, d_blurred, outputSize, cudaMemcpyDeviceToHost));

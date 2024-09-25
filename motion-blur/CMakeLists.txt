@@ -14,8 +14,16 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     CMAKE_BUILD_TYPE Debug
 )
 
+include(FetchContent)
+FetchContent_Declare(
+    argparse
+    GIT_REPOSITORY https://github.com/p-ranav/argparse.git
+)
+FetchContent_MakeAvailable(argparse)
+
 # set(CUDA_NVCC_FLAGS_DEBUG "-G;-lineinfo;-rdynamic;-g")
 
+target_link_libraries(${PROJECT_NAME} argparse)
 include_directories(${CMAKE_SOURCE_DIR}/deps)
 target_include_directories(${PROJECT_NAME} PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
 

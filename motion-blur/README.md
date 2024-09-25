@@ -25,6 +25,8 @@ from this motion path at regular intervals.
 ## Building
 
 ```bash
+git clone https://github.com/hrbigelow/codebits.git
+cd codebits/motion-blur
 mkdir build
 cd build
 cmake -DCMAKE_BUILD_TYPE=Release ..
@@ -37,15 +39,13 @@ Usage: ./motion_blur <input_file> <trajectory_file> <viewport_width> <viewport_h
 
 See several example trajectories in `test` directory.  The format for these is:
 
-```
-<num_matrices>
-mat1-row1
-mat1-row2
-mat1-row3
-mat2-row1
-...
-...
-```
+    <num_matrices>
+    mat1-row1
+    mat1-row2
+    mat1-row3
+    mat2-row1
+    ...
+    ...
 
 The remaining lines are rows of each matrix, each row containing three
 space-separated numbers.
