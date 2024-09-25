@@ -129,7 +129,7 @@ Rendering time (seconds): 1.242287
 ```
 
 ![krisof](./img/krisof-small.jpg)
-![krisof-rot.png](./img/krisof-rot.png)
+![krisof-rot.png](./img/krisof-rot.jpg)
 ![dreamsky](./img/dreamsky-small.jpg)
 ![dreamsky-trans](./img/dreamsky-trans.jpg)
 ![mikebirdy](./img/mikebirdy-small.jpg)
