@@ -93,6 +93,11 @@ int main(int argc, char *argv[]) {
         .default_value((int)(1024 * 44))
         .scan<'i', int>();
 
+    program.add_argument("-wig", "-wiggle")
+        .help("If present, produce a wiggled path for translation")
+        .implicit_value(true)
+        .default_value(false);
+
     try {
         program.parse_args(argc, argv);
     }
@@ -116,6 +121,7 @@ int main(int argc, char *argv[]) {
     auto project_x = program.get<std::vector<float>>("-px");
     auto project_y = program.get<std::vector<float>>("-py");
     auto pixel_buf_bytes = program.get<int>("-pbuf");
+    auto wiggle = program.get<bool>("-wig");
 
     int w, h, c;
     uchar3 *h_image = (uchar3 *)stbi_load(input_file.c_str(), &w, &h, &c, 0);
@@ -130,11 +136,20 @@ int main(int argc, char *argv[]) {
     Homography trajectory[MAX_HOMOGRAPHY_MATS];
     float inc = 1.0 / (float)(MAX_HOMOGRAPHY_MATS - 1);
     float t;
+    
+    BezierPoints points1, points2;
+    if (wiggle) {
+        points1 = {{{0,0.36},{0.3,2.235},{0.23,-0.28},{1,0.245}}};
+        points2 = {{{0,0},{0.78,-0.316},{0.86,1.93},{1,1}}};
+    } else {
+        points1 = points2 = {{{0,0},{0.333,0.333},{0.666,0.666},{1,1}}};
+    }
+    
     for (int i = 0; i != MAX_HOMOGRAPHY_MATS; i++) {
         t = i * inc;
         make_homography(
-                interpolate(translate_x[0], translate_x[1], t),
-                interpolate(translate_y[0], translate_y[1], t),
+                interpolate(translate_x[0], translate_x[1], bezier(points1, t)),
+                interpolate(translate_y[0], translate_y[1], bezier(points2, t)),
                 interpolate(scale_x[0], scale_x[1], t),
                 interpolate(scale_y[0], scale_y[1], t),
                 interpolate(rotate[0], rotate[1], t),

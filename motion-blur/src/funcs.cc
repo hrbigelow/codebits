@@ -2,6 +2,7 @@
 #include <fstream>
 #include <sstream>
 #include <cmath>
+#include "funcs.h"
 #include "blur.h"
 
 // Function to load matrices from the file
@@ -87,3 +88,24 @@ void print_mat(Homography &mat){
     printf("%5.2f %5.2f %5.2f\n", mat[i][0], mat[i][1], mat[i][2]);
   }
 }
+
+
+std::pair<float, float> 
+lerp(const std::pair<float, float> &p0, const std::pair<float, float> &p1, float t) {
+    return {
+        (1 - t) * p0.first + t * p1.first,
+        (1 - t) * p0.second + t * p1.second
+    };
+}
+
+float bezier(const BezierPoints &points, float t) {
+    auto p0p1 = lerp(points[0], points[1], t);
+    auto p1p2 = lerp(points[1], points[2], t);
+    auto p2p3 = lerp(points[2], points[3], t);
+    auto p01_12 = lerp(p0p1, p1p2, t);
+    auto p12_23 = lerp(p1p2, p2p3, t);
+    auto last = lerp(p01_12, p12_23, t);
+    return last.second;
+}
+
+
