@@ -118,6 +118,7 @@ Optional arguments:
   -px, --project-x          start and end horizontal projection [nargs=0..2] [default: {0 0}]
   -py, --project-y          start and end vertical projection [nargs=0..2] [default: {0 0}]
   -pbuf, --pixel-buf-bytes  size in bytes for shared memory pixel buffer [nargs=0..1] [default: 45056]
+  -wig, -wiggle             If present, produce a wiggled path for translation
 ```
 
 Translation from -40 to 40 horizontally, and -20 to 20 vertically:
@@ -128,12 +129,59 @@ image: 4016 x 6016 x 3
 ```
 
 ![krisof](./img/krisof-small.jpg)
+
+Original [photo](https://www.pexels.com/photo/scenic-view-of-night-sky-1252871/) by
+Hristo Fidanov 
+
 ![krisof-rot.png](./img/krisof-rot.jpg)
+
+Photo with rotation blur applied about the point (300, 350) through degrees -1.5 to
+1.5.
+
+    motion_blur krisof-small.jpg krisof-rot.png \
+        --rotate -1.5 1.5 \
+        --reference-point 300 350 \
+        --steps-per-block 10
+
+![krisof-wiggle.png](./img/krisof-wiggle.jpg)
+
+Photo with translation displacements of (-5, -3) through (5, 3) following a wiggled path.
+
+    motion_blur krisof-small.jpg krisof-wiggle.png \
+        --translate-x -5 5 \
+        --translate-y -3 3 \
+        --steps-per-block 10 \
+        --wiggle
+
 ![dreamsky](./img/dreamsky-small.jpg)
+
+The original
+[photo](https://www.pexels.com/photo/photography-of-fireworks-display-790916/) known
+as Dream Sky.
+
 ![dreamsky-trans](./img/dreamsky-trans.jpg)
+
+Dream Sky photo with translation blur (but no wiggle)
+
+    motion_blur dreamsky-small.jpg dreamsky-trans.png \
+        --translate-x -5 5 \
+        --translate-y -3 3 \
+        --steps-per-block 10
+
 ![mikebirdy](./img/mikebirdy-small.jpg)
+
+The original MikeBirdy
+[photo](https://www.pexels.com/photo/pathway-between-trees-towards-house-126271/)
+provided by [pexels.com](pexels.com).
+
 ![mikebirdy](./img/mikebirdy-scale.jpg)
 
+Scale blur - starting with the original (1, 1) scale and magnifying to (1.03, 1.03)
+(in x and y directions) using point (450, 300) as the origin.
 
-
+    motion_blur mikebirdy-small.jpg mikebirdy-scale.png \
+        --reference-point 450 300 \
+        --scale-x 1.0 1.03 \
+        --scale-y 1.0 1.03 \
+        --steps-per-block 10
 
