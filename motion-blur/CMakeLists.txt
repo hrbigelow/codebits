@@ -6,7 +6,8 @@ include(FindCUDAToolkit)
 add_executable(${PROJECT_NAME} src/funcs.cc src/main.cc src/blur.cu)
 
 set(CMAKE_CXX_FLAGS_DEBUG "-g")
-set(CMAKE_CUDA_FLAGS_DEBUG "-G -g")
+# set(CMAKE_CUDA_FLAGS_DEBUG "-G -g")
+set(CMAKE_CUDA_FLAGS_DEBUG "-g")
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON

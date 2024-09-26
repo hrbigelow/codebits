@@ -10,7 +10,7 @@
     typedef uchar3 Pixel;
 #endif
 
-__device__ __forceinline__ float2 transform(const Homography *mats, int t, float2 coord)
+__device__ __forceinline__ float2 transform(const Homography *mats, int t, const float2 &coord)
 {
     const Homography &h = mats[t];
 
@@ -22,7 +22,7 @@ __device__ __forceinline__ float2 transform(const Homography *mats, int t, float
 }
 
 __device__ float2 lin_transform(
-        const Homography *mats, unsigned int num_mats, float t, float2 coord)
+        const Homography *mats, unsigned int num_mats, float t, const float2 &coord)
 {
     // compute a linearly interpolated transformed coordinate, associating each mat
     // with values [0, num_mats) and linearly interpolating t

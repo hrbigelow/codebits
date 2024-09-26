@@ -21,9 +21,9 @@ __global__ void motionBlur_kernel(
         uchar3 *blurred,
         uint viewportWidth,
         uint viewportHeight) {
-    /* `numPixelLayers` is number of blocks worth of image data to accumulate at a
-     * given time.
-     * `steps_per_occu_block` is 
+    /* 
+     * `steps_per_occu_block` specifies number of samples per 32 x 32 are of
+     * receptive field
      */
     uint thread_id = threadIdx.y * blockDim.x + threadIdx.x;  // 0:1024
 
@@ -32,30 +32,37 @@ __global__ void motionBlur_kernel(
                                         // (exclusive) bottom right pixel in
                                         // `pixel_buf`
 
-    // each block of threads computes a 64 x 64 pixel patch, starting at (gx, gy)
+    // each block of threads computes a OUT_DIM_X x OUT_DIM_Y pixel patch, starting at (gx, gy)
     float gx = (float)(blockIdx.x * blockDim.x);
     float gy = (float)(blockIdx.y * blockDim.y * 4);
 
     // 1. Determine grid bounding box (in global viewport grid indices)
-    float2 targetCorners[4] = {{gx, gy}, {gx, gy + 64}, {gx + 64, gy}, {gx + 64, gy + 64}};
-    int min_x, min_y, max_x, max_y;
+    float2 targetCorners[4] = {
+        {gx, gy}, 
+        {gx, gy + OUT_DIM_Y}, 
+        {gx + OUT_DIM_X, gy}, 
+        {gx + OUT_DIM_X, gy + OUT_DIM_Y}};
+    float min_x, min_y, max_x, max_y;
+    float increment = (float)num_mats / (warpSize - 1);
 
     if (thread_id < 128) {
         // use one warp for each target square corner
         // use warpSize timesteps to estimate full extent of receptive field
-        const float inc = (float)num_mats / (warpSize - 1);
         int cornerIdx = thread_id % 4;
         int step = thread_id / 4;
-        float t = step * inc;
+        float t = step * increment;
         float2 source = lin_transform(trajectory_buf, num_mats, t, targetCorners[cornerIdx]);
-        min_x = max_x = (int)source.x;
-        min_y = max_y = (int)source.y;
+        // if (blockIdx.x == 3 && blockIdx.y == 3) {
+          //   printf("source: %f, %f\n", source.x, source.y);
+        // }
+        min_x = max_x = source.x;
+        min_y = max_y = source.y;
     } else {
-        min_x = min_y = INT_MAX;
-        max_x = max_y = INT_MIN;
+        min_x = min_y = FLT_MAX;
+        max_x = max_y = -FLT_MAX;
     }
 
-    using BlockReduce = cub::BlockReduce<int, BLOCK_DIM_X, cub::BLOCK_REDUCE_WARP_REDUCTIONS, 
+    using BlockReduce = cub::BlockReduce<float, BLOCK_DIM_X, cub::BLOCK_REDUCE_WARP_REDUCTIONS, 
           BLOCK_DIM_Y>;
     __shared__ typename BlockReduce::TempStorage br_storage;
     min_y = BlockReduce(br_storage).Reduce(min_y, cub::Min());
@@ -65,21 +72,15 @@ __global__ void motionBlur_kernel(
     max_y = BlockReduce(br_storage).Reduce(max_y, cub::Max());
     __syncthreads();
     max_x = BlockReduce(br_storage).Reduce(max_x, cub::Max());
-
-    if (thread_id == 0) {
-        box_start.x = min_x;
-        box_start.y = min_y;
-        box_end.x = max_x;
-        box_end.y = max_y;
-    }
     __syncthreads();
 
-    /*
     if (thread_id == 0) {
-        printf("box_start: %d, %d, box_end: %d, %d\n", box_start.x, box_start.y,
-                box_end.x, box_end.y);
+        box_start.x = (int)floorf(min_x);
+        box_start.y = (int)floorf(min_y);
+        box_end.x = (int)ceilf(max_x);
+        box_end.y = (int)ceilf(max_y);
     }
-    */
+    __syncthreads();
 
     // curandState randState;
     // curand_init(0, thread_id, 0, &randState);
@@ -88,8 +89,7 @@ __global__ void motionBlur_kernel(
     const int box_width = box_end.x - box_start.x; 
     const int box_size = box_width * (box_end.y - box_start.y);
     const int buf_size = pixel_buf_bytes / sizeof(uchar4);
-    const int num_timesteps = (int)((unsigned int)(box_size * steps_per_occu_block))>>10;
-    float inc = (float)num_mats / (float)(num_timesteps - 1);
+    const int num_timesteps = (int)((unsigned int)ceilf(box_size * steps_per_occu_block))>>10;
 
     int voff = 0; // offset into virtual buffer [0, box_size)
     int loff; // offset into pixel_buf [0, buf_size)
@@ -105,15 +105,9 @@ __global__ void motionBlur_kernel(
         make_int4(0, 0, 0, 0), 
     };
     uchar4 pixel4; 
-    /*
-    if (thread_id == 0) {
-        printf("buf_size: %d, pixel_buf_bytes: %d, num_timesteps: %d, inc: %f\n", 
-                buf_size, pixel_buf_bytes, num_timesteps, inc);
-    }
-    */
 
-    float2 source;
-    float2 target = make_float2(gx + threadIdx.x + 0.5, gy + threadIdx.y + 0.5);
+    increment = (float)num_mats / (float)(num_timesteps - 1);
+    float2 source, target;
 
     while (voff < box_size) {
         loff = thread_id;
@@ -127,42 +121,57 @@ __global__ void motionBlur_kernel(
         }
         __syncthreads();
 
+        target = make_float2(gx + (float)threadIdx.x + 0.5, gy + (float)threadIdx.y + 0.5);
         for (int ty = 0; ty != 4; ty++) {
+            t = 0.0;
             for (int i = 0; i != num_timesteps; ++i) {
-                // t = inc * (i + curand_normal(&randState) * 0.05);
-                t = inc * i;
+                // t = increment * (i + curand_normal(&randState) * 0.05);
                 source = lin_transform(trajectory_buf, num_mats, t, target);
+                t += increment;
+                // if ((int)floorf(source.x) < box_start.x) continue;
+                // if (source.x >= box_end.x) continue;
+                // if (source.y >= box_end.y) continue;
+                // if ((int)floorf(source.y) < box_start.y) continue;
                 // assert(source.x >= box_start.x);
                 // assert(source.y >= box_start.y);
                 // assert(source.x < box_end.x);
                 // assert(source.y < box_end.y);
-                // NOTE: This original formula caused a scrambling of 32 byte blocks
-                // int voff_src = (source.y - box_start.y) * box_width + (source.x - box_start.x);
-                int voff_src = ((int)source.y - box_start.y) * box_width + ((int)source.x - box_start.x);
-                loff = voff_src - voff;
+                int voff_src = (
+                        ((int)floorf(source.y) - box_start.y) * box_width +
+                        ((int)floorf(source.x) - box_start.x));
+
                 /*
-                if (thread_id == 0) {
-                    printf("voff_src: %d\n", voff_src);
+                if (i == 0 && blockIdx.x == 3 && blockIdx.y == 3 && threadIdx.x == 0) {
+                    printf("threadIdx.y: %d, ty: %d, target: %f, limit: %f\n", 
+                            threadIdx.y, ty, target.y, targetCorners[3].y);
                 }
                 */
+                    // if (source.y < box_start.y || source.y >= box_end.y) {
+                      //   printf("t: %f, ty: %d, box y: %d %d, source: %f\n", t, ty, box_start.y, box_end.y, source.y);
+                    // }
+
+                loff = voff_src - voff;
                 pixel4 = (loff >= 0 && loff < buf_size) ? pixel_buf[loff] : zero;
                 out_pixel[ty].x += pixel4.x;
                 out_pixel[ty].y += pixel4.y;
                 out_pixel[ty].z += pixel4.z;
                 num_accum[ty] += (loff >= 0 && loff < buf_size) ? 1 : 0;
             }
-            target.y += BLOCK_DIM_Y;
+            target.y += (float)BLOCK_DIM_Y;
         }
+        __syncthreads();
+
         voff += buf_size;
     }
 
-    uint2 target_pixel = make_uint2(gx + threadIdx.x, gy + threadIdx.y);
+    uint2 target_pixel = make_uint2((int)gx + threadIdx.x, (int)gy + threadIdx.y);
     for (int ty = 0; ty != 4; ty++) {
         if (target_pixel.x < viewportWidth && target_pixel.y < viewportHeight) {
             idx = target_pixel.y * viewportWidth + target_pixel.x;
-            blurred[idx].x = roundf((float)out_pixel[ty].x / (float)num_accum[ty]);
-            blurred[idx].y = roundf((float)out_pixel[ty].y / (float)num_accum[ty]);
-            blurred[idx].z = roundf((float)out_pixel[ty].z / (float)num_accum[ty]);
+            float mul = 1.0 / (float)num_accum[ty];
+            blurred[idx].x = roundf((float)out_pixel[ty].x * mul);
+            blurred[idx].y = roundf((float)out_pixel[ty].y * mul);
+            blurred[idx].z = roundf((float)out_pixel[ty].z * mul);
         }
         target_pixel.y += BLOCK_DIM_Y;
     }
