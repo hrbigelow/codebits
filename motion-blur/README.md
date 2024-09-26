@@ -64,13 +64,6 @@ Optional arguments:
 
 # Examples
 
-Translation from -40 to 40 horizontally, and -20 to 20 vertically:
-
-```bash
-./motion_blur krisof.jpg img/krisof-rot.png -tx -40 40 -ty -20 20 -sb 3
-image: 4016 x 6016 x 3
-```
-
 ![krisof](./img/krisof-small.jpg)
 
 Original [photo](https://www.pexels.com/photo/scenic-view-of-night-sky-1252871/) by
