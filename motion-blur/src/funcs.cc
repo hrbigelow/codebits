@@ -71,7 +71,7 @@ void make_homography(
     Homography P = { { 1, 0, 0 }, { 0, 1, 0 }, { px, py, 1 } };
     Homography T = { { 1, 0, tx }, { 0, 1, ty }, { 0, 0, 1 } };
     Homography R = { { cos_theta, -sin_theta, 0 }, { sin_theta, cos_theta, 0 }, { 0, 0, 1 } };
-    Homography K = { { 1, sk, 0 }, { 0, 1, 1 }, { 0, 0, 1 } };
+    Homography K = { { 1, sk, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
     Homography S = { { sx, 0, 0 }, { 0, sy, 0 }, { 0, 0, 1 } };
 
     matmul(P, T, out);

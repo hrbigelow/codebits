@@ -9,7 +9,7 @@ void motionBlur(
     const uchar3 *image,
     unsigned int inputWidth,
     unsigned int inputHeight,
-    unsigned int numPixelLayers,
+    int pixel_buf_bytes,
     float stepsPerOccuBlock,
     uchar3 *blurred,
     unsigned int viewportWidth,

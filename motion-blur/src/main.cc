@@ -26,7 +26,7 @@ int main(int argc, char *argv[]) {
     program.add_argument("-vp", "--viewport")
         .help("output viewport (width, height)")
         .nargs(2)
-        .default_value(std::vector<unsigned int>({ 500, 250 }))
+        .default_value(std::vector<unsigned int>{500, 250})
         .scan<'d', unsigned int>();
 
     program.add_argument("-sb", "--steps-per-block")
@@ -37,56 +37,61 @@ int main(int argc, char *argv[]) {
     program.add_argument("-ref", "--reference-point")
         .help("Reference point (x, y) about which the homographies are taken")
         .nargs(2)
-        .default_value(std::vector<float>({ 250, 125 }))
+        .default_value(std::vector<float>{250, 125})
         .scan<'g', float>();
 
     program.add_argument("-tx", "--translate-x")
         .help("beginning and ending horizontal translation in pixels")
         .nargs(2)
-        .default_value(std::vector<float>({ 0, 0 }))
+        .default_value(std::vector<float>{0, 0})
         .scan<'g', float>();
 
     program.add_argument("-ty", "--translate-y")
         .help("beginning and ending vertical translation in pixels")
         .nargs(2)
-        .default_value(std::vector<float>({ 0, 0 }))
+        .default_value(std::vector<float>{0, 0})
         .scan<'g', float>();
 
     program.add_argument("-sx", "--scale-x")
         .help("beginning and ending horizontal scale factor")
         .nargs(2)
-        .default_value(std::vector<float>({ 1, 1 }))
+        .default_value(std::vector<float>{1, 1})
         .scan<'g', float>();
 
     program.add_argument("-sy", "--scale-y")
         .help("beginning and ending vertical scale factor")
         .nargs(2)
-        .default_value(std::vector<float>({ 1, 1 }))
+        .default_value(std::vector<float>{1, 1})
         .scan<'g', float>();
 
     program.add_argument("-r", "--rotate")
         .help("beginning and ending rotation angle in degrees")
         .nargs(2)
-        .default_value(std::vector<float>({ 0, 0 }))
+        .default_value(std::vector<float>{0, 0})
         .scan<'g', float>();
 
     program.add_argument("-sk", "--skew")
         .help("beginning and ending skew")
         .nargs(2)
-        .default_value(std::vector<float>({ 0, 0 }))
+        .default_value(std::vector<float>{0, 0})
         .scan<'g', float>();
 
     program.add_argument("-px", "--project-x")
         .help("beginning and ending horizontal projection")
         .nargs(2)
-        .default_value(std::vector<float>({ 0, 0 }))
+        .default_value(std::vector<float>{0, 0})
         .scan<'g', float>();
 
     program.add_argument("-py", "--project-y")
         .help("beginning and ending vertical projection")
         .nargs(2)
-        .default_value(std::vector<float>({ 0, 0 }))
+        .default_value(std::vector<float>{0, 0})
         .scan<'g', float>();
+
+    program.add_argument("-pbuf", "--pixel-buf-bytes")
+        .help("size in bytes for shared memory pixel buffer")
+        .default_value((int)(1024 * 44))
+        .scan<'i', int>();
 
     try {
         program.parse_args(argc, argv);
@@ -110,16 +115,13 @@ int main(int argc, char *argv[]) {
     auto skew = program.get<std::vector<float>>("-sk");
     auto project_x = program.get<std::vector<float>>("-px");
     auto project_y = program.get<std::vector<float>>("-py");
+    auto pixel_buf_bytes = program.get<int>("-pbuf");
 
     int w, h, c;
     uchar3 *h_image = (uchar3 *)stbi_load(input_file.c_str(), &w, &h, &c, 0);
     printf("image: %d x %d x %d\n", w, h, c);
     size_t outputSize = sizeof(uchar3) * viewport[0] * viewport[1];
     uchar3 *h_blurred = (uchar3 *)malloc(sizeof(uchar3) * outputSize);
-
-    // 3K shared mem per block.  Set this based on shared memory size and maximum
-    // threads per SM
-    uint num_pixel_layers = 8;
 
     Homography trajectory[MAX_HOMOGRAPHY_MATS];
     float inc = 1.0 / (float)(MAX_HOMOGRAPHY_MATS - 1);
@@ -139,7 +141,7 @@ int main(int argc, char *argv[]) {
                 trajectory[i]);
     }
 
-    motionBlur(trajectory, MAX_HOMOGRAPHY_MATS, h_image, w, h, num_pixel_layers,
+    motionBlur(trajectory, MAX_HOMOGRAPHY_MATS, h_image, w, h, pixel_buf_bytes,
             steps_per_occu_block, h_blurred, viewport[0], viewport[1]);
 
     int channels = 3;
