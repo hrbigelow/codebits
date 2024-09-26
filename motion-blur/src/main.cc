@@ -24,9 +24,9 @@ int main(int argc, char *argv[]) {
         .help("Output PNG filename");
 
     program.add_argument("-vp", "--viewport")
-        .help("output viewport (width, height)")
+        .help("output viewport (width, height) (default (0, 0) will be set to input image size)")
         .nargs(2)
-        .default_value(std::vector<unsigned int>{500, 250})
+        .default_value(std::vector<unsigned int>{0, 0})
         .scan<'d', unsigned int>();
 
     program.add_argument("-sb", "--steps-per-block")
@@ -41,49 +41,49 @@ int main(int argc, char *argv[]) {
         .scan<'g', float>();
 
     program.add_argument("-tx", "--translate-x")
-        .help("beginning and ending horizontal translation in pixels")
+        .help("start and end horizontal translation in pixels")
         .nargs(2)
         .default_value(std::vector<float>{0, 0})
         .scan<'g', float>();
 
     program.add_argument("-ty", "--translate-y")
-        .help("beginning and ending vertical translation in pixels")
+        .help("start and end vertical translation in pixels")
         .nargs(2)
         .default_value(std::vector<float>{0, 0})
         .scan<'g', float>();
 
     program.add_argument("-sx", "--scale-x")
-        .help("beginning and ending horizontal scale factor")
+        .help("start and end horizontal scale factor")
         .nargs(2)
         .default_value(std::vector<float>{1, 1})
         .scan<'g', float>();
 
     program.add_argument("-sy", "--scale-y")
-        .help("beginning and ending vertical scale factor")
+        .help("start and end vertical scale factor")
         .nargs(2)
         .default_value(std::vector<float>{1, 1})
         .scan<'g', float>();
 
     program.add_argument("-r", "--rotate")
-        .help("beginning and ending rotation angle in degrees")
+        .help("start and end rotation angle in degrees")
         .nargs(2)
         .default_value(std::vector<float>{0, 0})
         .scan<'g', float>();
 
     program.add_argument("-sk", "--skew")
-        .help("beginning and ending skew")
+        .help("start and end skew")
         .nargs(2)
         .default_value(std::vector<float>{0, 0})
         .scan<'g', float>();
 
     program.add_argument("-px", "--project-x")
-        .help("beginning and ending horizontal projection")
+        .help("start and end horizontal projection")
         .nargs(2)
         .default_value(std::vector<float>{0, 0})
         .scan<'g', float>();
 
     program.add_argument("-py", "--project-y")
-        .help("beginning and ending vertical projection")
+        .help("start and end vertical projection")
         .nargs(2)
         .default_value(std::vector<float>{0, 0})
         .scan<'g', float>();
@@ -120,6 +120,10 @@ int main(int argc, char *argv[]) {
     int w, h, c;
     uchar3 *h_image = (uchar3 *)stbi_load(input_file.c_str(), &w, &h, &c, 0);
     printf("image: %d x %d x %d\n", w, h, c);
+    if (viewport[0] == 0 && viewport[1] == 0) {
+        viewport[0] = w;
+        viewport[1] = h;
+    }
     size_t outputSize = sizeof(uchar3) * viewport[0] * viewport[1];
     uchar3 *h_blurred = (uchar3 *)malloc(sizeof(uchar3) * outputSize);
 

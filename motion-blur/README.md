@@ -97,35 +97,34 @@ $$
 ```bash
 $ ./motion_blur
 input_image: 1 argument(s) expected. 0 provided.
-Usage: motion_blur [--help] [--version] [--viewport VAR...] [--steps-per-block VAR] [--reference-point VAR...] [--translate-x VAR...] [--translate-y VAR...] [--scale-x VAR...] [--scale-y VAR...] [--rotate VAR...] [--skew VAR...] [--project-x VAR...] [--project-y VAR...] input_image output_image
+Usage: motion_blur [--help] [--version] [--viewport VAR...] [--steps-per-block VAR] [--reference-point VAR...] [--translate-x VAR...] [--translate-y VAR...] [--scale-x VAR...] [--scale-y VAR...] [--rotate VAR...] [--skew VAR...] [--project-x VAR...] [--project-y VAR...] [--pixel-buf-bytes VAR] input_image output_image
 
 Positional arguments:
-  input_image              source PNG image file
-  output_image             Output PNG filename
+  input_image               source PNG image file
+  output_image              Output PNG filename
 
 Optional arguments:
-  -h, --help               shows help message and exits
-  -v, --version            prints version information and exits
-  -vp, --viewport          output viewport (width, height) [nargs=0..2] [default: {500 250}]
-  -sb, --steps-per-block   Trajectory sampling density in steps per occupied (32 x 32) pixel block [nargs=0..1] [default: 10]
-  -ref, --reference-point  Reference point (x, y) about which the homographies are taken [nargs=0..2] [default: {250 125}]
-  -tx, --translate-x       beginning and ending horizontal translation in pixels [nargs=0..2] [default: {0 0}]
-  -ty, --translate-y       beginning and ending vertical translation in pixels [nargs=0..2] [default: {0 0}]
-  -sx, --scale-x           beginning and ending horizontal scale factor [nargs=0..2] [default: {1 1}]
-  -sy, --scale-y           beginning and ending vertical scale factor [nargs=0..2] [default: {1 1}]
-  -r, --rotate             beginning and ending rotation angle in degrees [nargs=0..2] [default: {0 0}]
-  -sk, --skew              beginning and ending skew [nargs=0..2] [default: {0 0}]
-  -px, --project-x         beginning and ending horizontal projection [nargs=0..2] [default: {0 0}]
-  -py, --project-y         beginning and ending vertical projection [nargs=0..2] [default: {0 0}]
+  -h, --help                shows help message and exits
+  -v, --version             prints version information and exits
+  -vp, --viewport           output viewport (width, height) (default (0, 0) will be set to input image size) [nargs=0..2] [default: {0 0}]
+  -sb, --steps-per-block    Trajectory sampling density in steps per occupied (32 x 32) pixel block [nargs=0..1] [default: 10]
+  -ref, --reference-point   Reference point (x, y) about which the homographies are taken [nargs=0..2] [default: {250 125}]
+  -tx, --translate-x        start and end horizontal translation in pixels [nargs=0..2] [default: {0 0}]
+  -ty, --translate-y        start and end vertical translation in pixels [nargs=0..2] [default: {0 0}]
+  -sx, --scale-x            start and end horizontal scale factor [nargs=0..2] [default: {1 1}]
+  -sy, --scale-y            start and end vertical scale factor [nargs=0..2] [default: {1 1}]
+  -r, --rotate              start and end rotation angle in degrees [nargs=0..2] [default: {0 0}]
+  -sk, --skew               start and end skew [nargs=0..2] [default: {0 0}]
+  -px, --project-x          start and end horizontal projection [nargs=0..2] [default: {0 0}]
+  -py, --project-y          start and end vertical projection [nargs=0..2] [default: {0 0}]
+  -pbuf, --pixel-buf-bytes  size in bytes for shared memory pixel buffer [nargs=0..1] [default: 45056]
 ```
 
 Translation from -40 to 40 horizontally, and -20 to 20 vertically:
 
 ```bash
-./motion_blur krisof.jpg img/krisof-rot.png -vp 4016 6016 \
-    -tx -40 40 -ty -20 20 -sb 3
+./motion_blur krisof.jpg img/krisof-rot.png -tx -40 40 -ty -20 20 -sb 3
 image: 4016 x 6016 x 3
-Rendering time (seconds): 1.242287
 ```
 
 ![krisof](./img/krisof-small.jpg)
