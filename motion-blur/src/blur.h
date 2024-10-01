@@ -13,6 +13,7 @@ void motionBlur(
     float stepsPerOccuBlock,
     uchar3 *blurred,
     unsigned int viewportWidth,
-    unsigned int viewportHeight);
+    unsigned int viewportHeight,
+    float exposure_mul);
 
 #endif // _BLUR_H

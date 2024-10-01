@@ -20,7 +20,8 @@ __global__ void motionBlur_kernel(
         float steps_per_occu_block, 
         uchar3 *blurred,
         uint viewportWidth,
-        uint viewportHeight) {
+        uint viewportHeight,
+        float exposure_mul) {
     /* 
      * `steps_per_occu_block` specifies number of samples per 32 x 32 are of
      * receptive field
@@ -168,10 +169,10 @@ __global__ void motionBlur_kernel(
     for (int ty = 0; ty != 4; ty++) {
         if (target_pixel.x < viewportWidth && target_pixel.y < viewportHeight) {
             idx = target_pixel.y * viewportWidth + target_pixel.x;
-            float mul = 1.0 / (float)num_accum[ty];
-            blurred[idx].x = roundf((float)out_pixel[ty].x * mul);
-            blurred[idx].y = roundf((float)out_pixel[ty].y * mul);
-            blurred[idx].z = roundf((float)out_pixel[ty].z * mul);
+            float mul = exposure_mul / (float)num_accum[ty];
+            blurred[idx].x = min(roundf((float)out_pixel[ty].x * mul), 255.0);
+            blurred[idx].y = min(roundf((float)out_pixel[ty].y * mul), 255.0);
+            blurred[idx].z = min(roundf((float)out_pixel[ty].z * mul), 255.0);
         }
         target_pixel.y += BLOCK_DIM_Y;
     }
@@ -191,7 +192,8 @@ void motionBlur(
         float steps_per_occu_block,
         uchar3 *h_blurred,
         uint viewportWidth,
-        uint viewportHeight) {
+        uint viewportHeight,
+        float exposure_mul) {
 
     size_t inputSize = input_width * input_height * 3;
 
@@ -218,7 +220,7 @@ void motionBlur(
     motionBlur_kernel<<<dimGrid, dimBlock, pixel_buf_bytes>>>(
             num_mats, d_image, input_width, input_height, 
             pixel_buf_bytes, steps_per_occu_block, d_blurred,
-            viewportWidth, viewportHeight);
+            viewportWidth, viewportHeight, exposure_mul);
 
     CUDA_CHECK(cudaDeviceSynchronize());
     auto end_time = std::chrono::high_resolution_clock::now();
