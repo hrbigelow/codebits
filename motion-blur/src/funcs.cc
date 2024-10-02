@@ -1,6 +1,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <algorithm>
 #include <cmath>
 #include "funcs.h"
 #include "blur.h"
@@ -108,4 +109,19 @@ float bezier(const BezierPoints &points, float t) {
     return last.second;
 }
 
+
+std::string alpha_numeric(std::size_t value) {
+    const char chars[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const std::size_t base = sizeof(chars) - 1;
+    if (value == 0) return std::string(1, chars[0]);
+
+    std::string result;
+    while (value > 0) {
+        std::size_t remainder = value % base;
+        result += chars[remainder];
+        value /= base;
+    }
+    std::reverse(result.begin(), result.end());
+    return result;
+}
 

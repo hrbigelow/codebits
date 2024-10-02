@@ -53,9 +53,6 @@ __global__ void motionBlur_kernel(
         int step = thread_id / 4;
         float t = step * increment;
         float2 source = lin_transform(trajectory_buf, num_mats, t, targetCorners[cornerIdx]);
-        // if (blockIdx.x == 3 && blockIdx.y == 3) {
-          //   printf("source: %f, %f\n", source.x, source.y);
-        // }
         min_x = max_x = source.x;
         min_y = max_y = source.y;
     } else {
@@ -129,27 +126,9 @@ __global__ void motionBlur_kernel(
                 // t = increment * (i + curand_normal(&randState) * 0.05);
                 source = lin_transform(trajectory_buf, num_mats, t, target);
                 t += increment;
-                // if ((int)floorf(source.x) < box_start.x) continue;
-                // if (source.x >= box_end.x) continue;
-                // if (source.y >= box_end.y) continue;
-                // if ((int)floorf(source.y) < box_start.y) continue;
-                // assert(source.x >= box_start.x);
-                // assert(source.y >= box_start.y);
-                // assert(source.x < box_end.x);
-                // assert(source.y < box_end.y);
                 int voff_src = (
                         ((int)floorf(source.y) - box_start.y) * box_width +
                         ((int)floorf(source.x) - box_start.x));
-
-                /*
-                if (i == 0 && blockIdx.x == 3 && blockIdx.y == 3 && threadIdx.x == 0) {
-                    printf("threadIdx.y: %d, ty: %d, target: %f, limit: %f\n", 
-                            threadIdx.y, ty, target.y, targetCorners[3].y);
-                }
-                */
-                    // if (source.y < box_start.y || source.y >= box_end.y) {
-                      //   printf("t: %f, ty: %d, box y: %d %d, source: %f\n", t, ty, box_start.y, box_end.y, source.y);
-                    // }
 
                 loff = voff_src - voff;
                 pixel4 = (loff >= 0 && loff < buf_size) ? pixel_buf[loff] : zero;
@@ -161,7 +140,6 @@ __global__ void motionBlur_kernel(
             target.y += (float)BLOCK_DIM_Y;
         }
         __syncthreads();
-
         voff += buf_size;
     }
 
@@ -182,7 +160,7 @@ uint ceil_ratio(uint a, uint b) {
     return (a + b - 1) / b;
 }
 
-void motionBlur(
+double motionBlur(
         Homography *trajectory,
         uint num_mats,
         const uchar3 *h_image,
@@ -224,8 +202,8 @@ void motionBlur(
 
     CUDA_CHECK(cudaDeviceSynchronize());
     auto end_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed = end_time - start_time;
-    printf("Rendering time (seconds): %f\n", elapsed.count());
+    auto elapsed = end_time - start_time;
+    std::cerr << "Rendering time (seconds): " << elapsed.count() << std::endl;
 
     CUDA_CHECK(cudaGetLastError());
 
@@ -233,5 +211,6 @@ void motionBlur(
     CUDA_CHECK(cudaDeviceSynchronize());
     CUDA_CHECK(cudaFree(d_image));
     CUDA_CHECK(cudaFree(d_blurred));
+    return elapsed.count();
 }
 

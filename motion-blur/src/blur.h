@@ -3,7 +3,7 @@
 
 #include "dims.h"
 
-void motionBlur(
+double motionBlur(
     Homography *trajectory,
     unsigned int numMats,
     const uchar3 *image,

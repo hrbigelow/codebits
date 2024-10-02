@@ -14,6 +14,7 @@ void make_homography(
 
 typedef std::array<std::pair<float, float>, 4> BezierPoints;
 float bezier(const BezierPoints &points, float t);
+std::string alpha_numeric(std::size_t value);
 
 #endif // _FUNCS_H
 

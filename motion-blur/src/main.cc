@@ -10,6 +10,7 @@
 #include "funcs.h"
 #include <vector>
 #include <sstream>
+#include <functional>
 
 float interpolate(float beg, float end, float weight) {
     return beg + (end - beg) * weight;
@@ -100,7 +101,7 @@ int main(int argc, char *argv[]) {
         .default_value(1.0f)
         .scan<'g', float>();
 
-    program.add_argument("-wig", "-wiggle")
+    program.add_argument("-wig", "--wiggle")
         .help("If present, produce a wiggled path for translation")
         .implicit_value(true)
         .default_value(false);
@@ -133,39 +134,38 @@ int main(int argc, char *argv[]) {
 
     output_path << output_dir << "/";
     auto last_dot = input_file.find_last_of('.');
-    output_path << input_file.substr(0, last_dot);
+    out_opts << input_file.substr(0, last_dot);
     if (steps_per_occu_block != 10.0)
-        output_path << "_sb" << steps_per_occu_block;
+        out_opts << " -sb " << steps_per_occu_block;
     if (ref_point[0] != 0 || ref_point[1] != 0)
-        output_path << "_ref" << ref_point[0] << ":" << ref_point[1]; 
+        out_opts << " -ref " << ref_point[0] << " " << ref_point[1]; 
     if (translate_x[0] != 0.0 || translate_x[1] != 0.0) 
-        output_path << "_tx" << translate_x[0] << ":" << translate_x[1];
+        out_opts << " -tx " << translate_x[0] << " " << translate_x[1];
     if (translate_y[0] != 0.0 || translate_y[1] != 0.0) 
-        output_path << "_ty" << translate_y[0] << ":" << translate_y[1];
+        out_opts << " -ty " << translate_y[0] << " " << translate_y[1];
     if (scale_x[0] != 1.0 || scale_x[1] != 1.0)
-        output_path << "_sx" << scale_x[0] << ":" << scale_x[1];
+        out_opts << " -sx " << scale_x[0] << " " << scale_x[1];
     if (scale_y[0] != 1.0 || scale_y[1] != 1.0)
-        output_path << "_sy" << scale_y[0] << ":" << scale_y[1];
+        out_opts << " -sy " << scale_y[0] << " " << scale_y[1];
     if (rotate[0] != 0.0 || rotate[1] != 0.0)
-        output_path << "_r" << rotate[0] << ":" << rotate[1];
+        out_opts << " -r " << rotate[0] << " " << rotate[1];
     if (skew[0] != 0.0 || skew[1] != 0.0) 
-        output_path << "_sk" << skew[0] << ":" << skew[1];
+        out_opts << " -sk " << skew[0] << " " << skew[1];
     if (project_x[0] != 0.0 || project_x[1] != 0.0)
-        output_path << "_px" << project_x[0] << ":" << project_x[1];
+        out_opts << " -px " << project_x[0] << " " << project_x[1];
     if (project_y[0] != 0.0 || project_y[1] != 0.0)
-        output_path << "_py" << project_y[0] << ":" << project_y[1];
+        out_opts << " -py " << project_y[0] << " " << project_y[1];
     if (exposure_mul != 1.0)
-        output_path << "_em" << exposure_mul;
+        out_opts << " -em " << exposure_mul;
     if (wiggle)
-        output_path << "_wig";
-    output_path << ".png";
+        out_opts << " -wig";
 
-    std::cout << "out_path: " << output_path.str() << std::endl;
-    std::cout << "input_file: " << input_file << std::endl;
+    auto name = alpha_numeric(std::hash<std::string>{}(out_opts.str()));
+    output_path << name << ".png";
 
     int w, h, c;
     uchar3 *h_image = (uchar3 *)stbi_load(input_file.c_str(), &w, &h, &c, 0);
-    printf("image: %d x %d x %d\n", w, h, c);
+    std::cerr << "image: " << w << " x " << h << " x " << c << std::endl;
     if (viewport[0] == 0 && viewport[1] == 0) {
         viewport[0] = w;
         viewport[1] = h;
@@ -200,9 +200,10 @@ int main(int argc, char *argv[]) {
                 trajectory[i]);
     }
 
-    motionBlur(trajectory, MAX_HOMOGRAPHY_MATS, h_image, w, h, pixel_buf_bytes,
+    auto elapsed = motionBlur(trajectory, MAX_HOMOGRAPHY_MATS, h_image, w, h, pixel_buf_bytes,
             steps_per_occu_block, h_blurred, viewport[0], viewport[1], exposure_mul);
 
+    std::cout << output_path.str() << "\t" << elapsed << "\t" << out_opts.str() << std::endl; 
     int channels = 3;
     unsigned stride_in_bytes = viewport[0] * 3;
     stbi_write_png(output_path.str().c_str(), viewport[0], viewport[1], channels,
