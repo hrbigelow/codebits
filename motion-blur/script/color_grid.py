@@ -4,7 +4,7 @@ import random
 import fire
 
 # Function to generate a random color
-def random_color(min_sum=500, max_sum=765):
+def random_color(min_sum=200, max_sum=765):
     r = randint(max(min_sum - 510, 0), 255)
     g = randint(max(min_sum - 255 - r, 0), 255)
     b = randint(max(min_sum - r - g, 0), 255)
