@@ -65,18 +65,23 @@ TEMPLATE2='
 </html>
 '
 
+TX=60
+TY=15
+SC=1.05
+ROT=1.5
+PR=3e-05
 
 opstrings=(
   "-m Original"
-  "-m 'Translation' -sb 20 -tx -40 40 -ty -10 10 -em $EXPOSURE_MUL"
-  "-m 'Translation Wiggle' -sb 20 -tx -40 40 -ty -10 10 -em $EXPOSURE_MUL -wig"
-  "-m 'Rotation' -ref 3000 2000 -r -1 1 -em $EXPOSURE_MUL"
-  "-m 'Scale and Rotation' -sb 30 -ref 3000 2000 -sx 1 1.03 -sy 1 1.03 -r -1 1 -em $EXPOSURE_MUL"
+  "-m 'Translation' -sb 20 -tx -$TX $TX -ty -$TY $TY -em $EXPOSURE_MUL"
+  "-m 'Translation Wiggle' -sb 20 -tx -$TX $TX -ty -$TY $TY -em $EXPOSURE_MUL -wig"
+  "-m 'Rotation' -ref 3000 2000 -r -$ROT $ROT -em $EXPOSURE_MUL"
+  "-m 'Scale and Rotation' -sb 30 -ref 3000 2000 -sx 1 $SC -sy 1 $SC -r -$ROT $ROT -em $EXPOSURE_MUL"
   "-m 'Skew' -ref 1350 2000 -sk -0.03 0.03 -em $EXPOSURE_MUL"
-  "-m 'Scale' -sb 30 -ref 3000 2000 -sx 1 1.03 -sy 1 1.03 -em $EXPOSURE_MUL"
-  "-m 'Projection' -sb 5 -ref 2000 2000 -px 1e-05 2e-05 -py -1e-05 -2e-05 -em $EXPOSURE_MUL"
-  "-m 'Translation, Rotation' -sb 20 -tx -40 40 -ty -10 10 -r -1 1 -em $EXPOSURE_MUL"
-  "-m 'Trans., Scale, Rotation, Projection' -sb 5 -ref 2000 2000 -tx -5 5 -ty -10 10 -sx 1 1.03 -sy 1 1.03 -r -1 1 -px 1e-05 2e-05 -py -1e-05 -2e-05 -em $EXPOSURE_MUL"
+  "-m 'Scale' -sb 30 -ref 3000 2000 -sx 1 $SC -sy 1 $SC -em $EXPOSURE_MUL"
+  "-m 'Projection' -sb 5 -ref 2000 2000 -px 0 $PR -py 0 -$PR -em $EXPOSURE_MUL"
+  "-m 'Translation, Rotation' -sb 20 -tx -$TX $TX -ty -$TY $TY -r -$ROT $ROT -em $EXPOSURE_MUL"
+  "-m 'Trans., Scale, Rotation, Projection' -sb 5 -ref 2000 2000 -tx -$TX $TX -ty -$TY $TY -sx 1 $SC -sy 1 $SC -r -$ROT $ROT -px 0 $PR -py 0 -$PR -em $EXPOSURE_MUL"
 )
 
 echo "$TEMPLATE1"

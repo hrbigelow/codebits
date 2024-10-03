@@ -1,9 +1,10 @@
 # A custom CUDA kernel for Motion Blur
 
 This is a custom CUDA kernel for generating motion blur as defined by any combination
-of translation, rotation, skew, projection and scaling.  Internally, all of these
-aspects of an image deformation are expressed by a homography matrix, and a
-*trajectory* consists of a sequence of such homography matrices.
+of translation, rotation, skew, projection and scaling.  See the [demo
+page](https://www.mlcrumbs.com/motion-blur/grid.html) for some examples.  Internally,
+all of these aspects of an image deformation are expressed by a homography matrix,
+and a *trajectory* consists of a sequence of such homography matrices.
 
 In this demo, each aspect is provided as a *start* and *end* value with defaults set
 to the non-effect value (zero for translation, rotation, skew, and projection, and
