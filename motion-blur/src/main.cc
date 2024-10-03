@@ -26,6 +26,10 @@ int main(int argc, char *argv[]) {
     program.add_argument("output_dir")
         .help("Output PNG directory");
 
+    program.add_argument("-m", "--message")
+        .help("Optional human-friendly message to associate with this run")
+        .default_value(std::string("Default"));
+
     program.add_argument("-vp", "--viewport")
         .help("output viewport (width, height) (default (0, 0) will be set to input image size)")
         .nargs(2)
@@ -117,6 +121,7 @@ int main(int argc, char *argv[]) {
 
     auto input_file = program.get<std::string>("input_image");
     auto output_dir = program.get<std::string>("output_dir");
+    auto message = program.get<std::string>("m");
     auto steps_per_occu_block = program.get<float>("sb");
     auto viewport = program.get<std::vector<unsigned int>>("-vp");
     auto ref_point = program.get<std::vector<float>>("-ref");
@@ -133,8 +138,7 @@ int main(int argc, char *argv[]) {
     auto pixel_buf_bytes = program.get<int>("-pbuf");
 
     output_path << output_dir << "/";
-    auto last_dot = input_file.find_last_of('.');
-    out_opts << input_file.substr(0, last_dot);
+    out_opts << input_file;
     if (steps_per_occu_block != 10.0)
         out_opts << " -sb " << steps_per_occu_block;
     if (ref_point[0] != 0 || ref_point[1] != 0)
@@ -203,7 +207,7 @@ int main(int argc, char *argv[]) {
     auto elapsed = motionBlur(trajectory, MAX_HOMOGRAPHY_MATS, h_image, w, h, pixel_buf_bytes,
             steps_per_occu_block, h_blurred, viewport[0], viewport[1], exposure_mul);
 
-    std::cout << output_path.str() << "\t" << elapsed << "\t" << out_opts.str() << std::endl; 
+    std::cout << output_path.str() << "\t" << message << "\t" << elapsed << "\t" << out_opts.str() << std::endl; 
     int channels = 3;
     unsigned stride_in_bytes = viewport[0] * 3;
     stbi_write_png(output_path.str().c_str(), viewport[0], viewport[1], channels,

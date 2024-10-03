@@ -203,7 +203,7 @@ double motionBlur(
     CUDA_CHECK(cudaDeviceSynchronize());
     auto end_time = std::chrono::high_resolution_clock::now();
     auto elapsed = end_time - start_time;
-    std::cerr << "Rendering time (seconds): " << elapsed.count() << std::endl;
+    // std::cerr << "Rendering time (seconds): " << elapsed.count() << std::endl;
 
     CUDA_CHECK(cudaGetLastError());
 
