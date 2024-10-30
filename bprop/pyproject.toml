@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bprop-experiments"
+version = "0.1.0"
+description = "Alternative BackProp experiments from Yaroslav Bulatov"
+authors = [{name="Henry Bigelow", email="hrbigelow@gmail.com"}]
+dependencies = [
+  # "transformers",
+  "flax",
+  "jax",
+  "optax",
+  "tensorflow",
+  "tensorflow-datasets>=4.9.2",
+  "fire",
+  "numpy",
+  # "streamvis @ git+https://github.com/hrbigelow/streamvis.git"
+]
+
+[tool.setuptools]
+packages = ["seqgrad"]
+
+

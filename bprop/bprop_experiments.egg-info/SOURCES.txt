@@ -1,0 +1,7 @@
+pyproject.toml
+bprop_experiments.egg-info/PKG-INFO
+bprop_experiments.egg-info/SOURCES.txt
+bprop_experiments.egg-info/dependency_links.txt
+bprop_experiments.egg-info/requires.txt
+bprop_experiments.egg-info/top_level.txt
+seqgrad/module.py
