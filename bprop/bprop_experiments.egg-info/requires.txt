@@ -1,7 +1,0 @@
-flax
-jax
-optax
-tensorflow
-tensorflow-datasets>=4.9.2
-fire
-numpy
