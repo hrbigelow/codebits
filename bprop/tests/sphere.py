@@ -9,14 +9,21 @@ from typing import List
 import optax
 from seqgrad.module import SGModule
 
-def sphere_dataset(batch_size, num_steps, rngs):
+def sphere_dataset(num_steps, batch_size, ndims, rngs):
   """
-  Generate random points on a 2D unit sphere
+  Generate random points on a `ndims` unit sphere using Box-Mueller
   """
-  for _ in range(num_steps):
-    angle = jax.random.normal(rngs(), (batch_size,)) * jnp.pi * 2
-    points = jnp.stack([jnp.sin(angle), jnp.cos(angle)], axis=1)
-    yield points
+  assert ndims % 2 == 0, 'Use even-sized ndims'
+  shape = num_steps, batch_size, (ndims // 2)
+  ang = jax.random.uniform(rngs(), shape) * jnp.pi * 2
+  uni = jax.random.uniform(rngs(), shape)
+  rad = jnp.sqrt(-2.0 * jnp.log(uni))
+
+  z1 = rad * jnp.cos(ang) 
+  z2 = rad * jnp.sin(ang) 
+  z = jnp.concat([z1, z2], axis=2)
+  z = z / jnp.sqrt(jnp.sum(z ** 2, axis=2, keepdims=True))
+  yield from z
 
 
 class Lin2(nnx.Module):
@@ -26,11 +33,12 @@ class Lin2(nnx.Module):
                input_width: int,
                layer_width: int, 
                do_seqgrad: bool,
-               rngs: nnx.Rngs):
-    widths = [input_width] + [layer_width] * (num_layers - 2) + [input_width]
+               rngs: nnx.Rngs,
+               use_bias: bool=False):
+    widths = [input_width] + [layer_width] * (num_layers - 1) + [input_width]
 
     self.layers = [
-        SGModule(nnx.Linear, tx, do_seqgrad, in_dim, out_dim, rngs=rngs)
+        SGModule(nnx.Linear, tx, do_seqgrad, in_dim, out_dim, rngs=rngs, use_bias=use_bias)
         for in_dim, out_dim in zip(widths[:-1], widths[1:])
         ]
 
@@ -61,9 +69,8 @@ def make_test_func(test_step, batch_size, num_layers, input_width, layer_width,
                    do_seqgrad, do_layerwise_opt):
   def diverges(lr, target_loss, rngs):
     tx = optax.sgd(lr)
-    input_width = 2
     model = Lin2(tx, num_layers, input_width, layer_width, do_seqgrad, rngs)
-    ds = sphere_dataset(batch_size, test_step, rngs)
+    ds = sphere_dataset(test_step, batch_size, input_width, rngs)
     if do_layerwise_opt:
       optimizers = layerwise_optimizers(model, tx)
     else:
@@ -129,6 +136,7 @@ def find_lowest_divergent(
     start_step_size = 0.05,
     tolerance = 0.00001,
     num_layers=3,
+    input_width=2,
     layer_width=2, 
     batch_size=1, 
     num_steps=500, 
@@ -147,6 +155,7 @@ def find_lowest_divergent(
       f'{start_step_size=}\n'
       f'{dataset_seed=}\n'
       f'{num_layers=}\n'
+      f'{input_width=}\n'
       f'{layer_width=}\n'
       f'{do_seqgrad=}\n'
       f'{do_layerwise_opt=}\n'
@@ -158,14 +167,13 @@ def find_lowest_divergent(
   rngs = nnx.Rngs(seed)
   def target_loss(lr):
     tx = optax.sgd(lr)
-    input_width = 2
     model = Lin2(tx, num_layers, input_width, layer_width, do_seqgrad, rngs)
     if do_layerwise_opt:
       optimizers = layerwise_optimizers(model, tx)
     else:
       optimizers = [nnx.Optimizer(model, tx)]
     metrics = nnx.MultiMetric(loss=nnx.metrics.Average('loss'))
-    ds = sphere_dataset(batch_size, num_steps, dataset_seed)
+    ds = sphere_dataset(num_steps, batch_size, input_width, dataset_seed)
     for step, batch in enumerate(ds):
       train_step(model, optimizers, metrics, batch)
       stats = metrics.compute()
@@ -211,6 +219,7 @@ def layerwise_optimizers(model, tx):
 
 def main(learning_rate=0.001,
          num_layers=2, 
+         input_width=2,
          layer_width=2, 
          batch_size=1, 
          num_steps=3000, 
@@ -225,9 +234,10 @@ def main(learning_rate=0.001,
       f'{do_seqgrad=}, '
       f'{do_layerwise_opt=}, '
       f'{num_layers=}, '
+      f'{input_width=}, '
+      f'{layer_width=}, '
       f'{num_steps=}, '
-      f'{eval_every=}, '
-      f'{layer_width=}')
+      f'{eval_every=}')
   tx = optax.sgd(learning_rate)
   input_width = 2
   rngs = nnx.Rngs(seed)
@@ -238,11 +248,10 @@ def main(learning_rate=0.001,
     optimizers = [nnx.Optimizer(model, tx)]
 
   metrics = nnx.MultiMetric(loss=nnx.metrics.Average('loss'))
-  ds = sphere_dataset(batch_size, num_steps, seed)
+  ds = sphere_dataset(num_steps, batch_size, input_width, rngs)
   initial_loss = None
   num_steps_to_goal = None
   goal_loss = None
-
   
   for step, batch in enumerate(ds):
     train_step(model, optimizers, metrics, batch)
