@@ -8,34 +8,27 @@ from flax.nnx import filterlib
 from typing import List
 import optax
 from seqgrad.module import SGModule
+from seqgrad import opt
 
 def sphere_dataset(num_steps, batch_size, ndims, rngs):
-  """
-  Generate random points on a `ndims` unit sphere using Box-Mueller
-  """
-  assert ndims % 2 == 0, 'Use even-sized ndims'
-  shape = num_steps, batch_size, (ndims // 2)
-  ang = jax.random.uniform(rngs(), shape) * jnp.pi * 2
-  uni = jax.random.uniform(rngs(), shape)
-  rad = jnp.sqrt(-2.0 * jnp.log(uni))
-
-  z1 = rad * jnp.cos(ang) 
-  z2 = rad * jnp.sin(ang) 
-  z = jnp.concat([z1, z2], axis=2)
-  z = z / jnp.sqrt(jnp.sum(z ** 2, axis=2, keepdims=True))
-  yield from z
+  # Generate random points on a `ndims` unit sphere 
+  def make_chunk(chunk):
+    z = jax.random.normal(rngs(), (chunk, batch_size, ndims))
+    z = z / jnp.sqrt(jnp.sum(z ** 2, axis=2, keepdims=True))
+    return z
+  while num_steps > 0:
+    z = make_chunk(min(num_steps, 1000))
+    yield from z
+    num_steps -= z.shape[0]
 
 
 class Lin2(nnx.Module):
   def __init__(self, 
                tx: optax.GradientTransformation,
-               num_layers: int, 
-               input_width: int,
-               layer_width: int, 
+               widths: List[int], 
                do_seqgrad: bool,
                rngs: nnx.Rngs,
                use_bias: bool=False):
-    widths = [input_width] + [layer_width] * (num_layers - 1) + [input_width]
 
     self.layers = [
         SGModule(nnx.Linear, tx, do_seqgrad, in_dim, out_dim, rngs=rngs, use_bias=use_bias)
@@ -48,72 +41,131 @@ class Lin2(nnx.Module):
     return x
 
 
-def loss_fn(model, batch):
+def sphere_mapping_loss_fn(model, batch):
   y = model(batch)
   norms2 = jnp.sum(y ** 2, axis=1)
   loss = jnp.mean((1.0 - norms2) ** 2)
   return loss
 
-@nnx.jit
-def train_step(model, optimizers: List[nnx.Optimizer], metrics: nnx.MultiMetric, batch):
-  # perform one logical train step as a series of one or more block steps, each
-  # defined by the optimizer.wrt filter
-  for opt in optimizers:
-    diff_state = nnx.DiffState(0, opt.wrt)
+def zero_mapping_loss_fn(model, batch):
+  y = model(batch) # [batch, out_dim]
+  norms2 = jnp.sum(y ** 2, axis=1)
+  loss = 0.5 * jnp.mean(norms2)
+  return loss
+
+def zero_mapping_sqrt_loss_fn(model, batch):
+  y = model(batch) # [batch, out_dim]
+  norms2 = jnp.sum(y ** 2, axis=1)
+  loss = jnp.mean(jnp.sqrt(norms2))
+  return loss
+
+
+@nnx.jit(static_argnames=('loss_mode'))
+def train_step(model, metrics: nnx.MultiMetric, batch, optimizer, loss_mode):
+  loss_fn = get_loss_fn(loss_mode)
+  # for i in range(optimizer.num_substeps):
+  def step_fn(step, inputs):
+    _, optimizer = inputs
+    diff_state = nnx.DiffState(0, optimizer.wrt)
     grad_fn = nnx.value_and_grad(loss_fn, has_aux=False, argnums=diff_state)
     loss, grads = grad_fn(model, batch)
-    opt.update(grads)
+    optimizer.update(grads, step)
+    return loss, optimizer 
+
+  loss, _ = nnx.fori_loop(0, optimizer.num_substeps, step_fn, (0.0, optimizer))
   metrics.update(loss=loss)
 
-def make_test_func(test_step, batch_size, num_layers, input_width, layer_width,
-                   do_seqgrad, do_layerwise_opt):
+def make_test_fn(step_budget, batch_size, widths, do_seqgrad, opt_mode, loss_mode):
+
   def diverges(lr, target_loss, rngs):
     tx = optax.sgd(lr)
-    model = Lin2(tx, num_layers, input_width, layer_width, do_seqgrad, rngs)
-    ds = sphere_dataset(test_step, batch_size, input_width, rngs)
-    if do_layerwise_opt:
-      optimizers = layerwise_optimizers(model, tx)
-    else:
-      optimizers = [nnx.Optimizer(model, tx)]
+    model = Lin2(tx, widths, do_seqgrad, rngs)
+    # train_step = make_train_step(model, tx, opt_mode, loss_mode)
+    # loss_fn = get_loss_fn(loss_mode)
+    optimizer = get_optimizer(model, tx, opt_mode)
+    ds = sphere_dataset(step_budget, batch_size, widths[0], rngs)
     metrics = nnx.MultiMetric(loss=nnx.metrics.Average('loss'))
+    initial_loss = None
     for step, batch in enumerate(ds):
-      train_step(model, optimizers, metrics, batch)
+      train_step(model, metrics, batch, optimizer, loss_mode)
       stats = metrics.compute()
-      loss = stats['loss']
       metrics.reset()
-    return jnp.isnan(loss) or jnp.isinf(loss) or loss > target_loss
+      loss = stats['loss']
+      if step == 30:
+        initial_loss = loss
+      if jnp.isnan(loss) or jnp.isinf(loss): 
+        # print(f'diverged at step {step}, loss {loss}')
+        return True
+      # if initial_loss is not None and loss > 2.0 * initial_loss:
+        # print(f'diverged at step {step}, loss {loss}')
+        # return True
+      if loss < target_loss:
+        return False
+      # print(step, loss, target_loss)
+    print(f'exit loop at step {step}')
+    return True
   return diverges
+
+def get_loss_fn(loss_mode):
+  if loss_mode == 'origin':
+    return zero_mapping_loss_fn
+  elif loss_mode == 'origin_sqrt':
+    return zero_mapping_sqrt_loss_fn
+  elif loss_mode == 'sphere':
+    return sphere_mapping_loss_fn
+  else:
+    raise RuntimeError(f'loss_mode must be either `origin`, `origin_sqrt` or `sphere`, got {loss_mode}')
+  
+def get_optimizer(model, tx, opt_mode):
+  if opt_mode == 'layer':
+    prefixes = [('layers', l, 'mod') for l in range(len(model.layers))][::-1]
+    filters = [filterlib.PathStartsWith(p) for p in prefixes]
+    update_exprs = [ParamUpdateExpr(f, None) for f in filters]
+    return opt.PartialOptimizer(update_exprs, model, tx)
+  elif opt_mode == 'single':
+    return opt.PartialOptimizer(opt.SequentialCoordFn, model, tx)
+  elif opt_mode == 'odd_even':
+    return opt.PartialOptimizer(opt.OddEvenCoordFn, model, tx)
+  elif opt_mode == 'coord':
+    # individual coordinates
+    pass
+
+  else:
+    raise RuntimeError(f'opt_mode must be one of `layer`, `single`, `odd_even` or `coord`.'
+                       f'  got {opt_mode}')
+
 
 def stochastic_lr_search(
     seed=12345,
     starting_lr=0.1,
     window_size=100,
-    warmup=40,
+    warmup=60,
     factor=1.1,
-    test_step=500,
-    batch_size=1,
-    num_layers=2,
-    input_width=2,
-    layer_width=100,
+    step_budget=100000,
     target_loss=1e-5,
+    batch_size=1,
+    widths=None,
     do_seqgrad=False,
-    do_layerwise_opt=False):
+    opt_mode='single',
+    loss_mode='origin'):
+  if widths is None:
+    widths = [2, 2]
+
   print(
       f'{seed=}\n'
       f'{starting_lr=}\n'
       f'{warmup=}\n'
       f'{window_size=}\n'
       f'{factor=}\n'
-      f'{test_step=}\n'
+      f'{step_budget=}\n'
       f'{target_loss=}\n'
-      f'{num_layers=}\n'
-      f'{layer_width=}\n'
+      f'{widths=}\n'
       f'{do_seqgrad=}\n'
-      f'{do_layerwise_opt=}\n'
+      f'{opt_mode=}\n'
+      f'{loss_mode=}\n'
       )
 
-  diverges_fn = make_test_func(test_step, batch_size, num_layers, input_width,
-                               layer_width, do_seqgrad, do_layerwise_opt)
+  diverges_fn = make_test_fn(step_budget, batch_size, widths, do_seqgrad, opt_mode, loss_mode)
 
   lr = starting_lr
   lrs = deque([None] * window_size)
@@ -128,21 +180,20 @@ def stochastic_lr_search(
     lrs.popleft()
     lrs.append(lr)
   stochastic_lr = sum(lrs) / len(lrs) 
-  print(f'\rStochastic LR: {stochastic_lr:9.8f}')
+  print(f'\r{opt_mode=} {loss_mode=} {widths=} {stochastic_lr=:9.8f}')
 
 
 def find_lowest_divergent(
     starting_lr = 0.1,
     start_step_size = 0.05,
     tolerance = 0.00001,
-    num_layers=3,
-    input_width=2,
-    layer_width=2, 
+    widths = None,
     batch_size=1, 
     num_steps=500, 
     success_loss = 0.0001,
     do_seqgrad=True,
-    do_layerwise_opt=False,
+    opt_mode='single',
+    loss_mode='origin',
     seed=12345,
     dataset_seed=12345):
   """
@@ -150,15 +201,16 @@ def find_lowest_divergent(
   `num_tries` trainings of `num_steps`.  Here, "diverges" means that the loss takes
   on a nan or inf value before `num_steps` has occurred.
   """
+  if widths is None:
+    widths = [2, 2]
+
   print(
       f'{seed=}\n'
       f'{start_step_size=}\n'
       f'{dataset_seed=}\n'
-      f'{num_layers=}\n'
-      f'{input_width=}\n'
-      f'{layer_width=}\n'
+      f'{widths=}\n'
       f'{do_seqgrad=}\n'
-      f'{do_layerwise_opt=}\n'
+      f'{opt_mode=}\n'
       f'{num_steps=}\n'
       f'{tolerance=}\n'
       f'{success_loss=}\n'
@@ -167,15 +219,12 @@ def find_lowest_divergent(
   rngs = nnx.Rngs(seed)
   def target_loss(lr):
     tx = optax.sgd(lr)
-    model = Lin2(tx, num_layers, input_width, layer_width, do_seqgrad, rngs)
-    if do_layerwise_opt:
-      optimizers = layerwise_optimizers(model, tx)
-    else:
-      optimizers = [nnx.Optimizer(model, tx)]
+    model = Lin2(tx, widths, do_seqgrad, rngs)
+    train_step(model, metrics, batch, optimizer, loss_mode)
     metrics = nnx.MultiMetric(loss=nnx.metrics.Average('loss'))
-    ds = sphere_dataset(num_steps, batch_size, input_width, dataset_seed)
+    ds = sphere_dataset(num_steps, batch_size, widths[0], dataset_seed)
     for step, batch in enumerate(ds):
-      train_step(model, optimizers, metrics, batch)
+      train_step(model, metrics, batch)
       stats = metrics.compute()
       loss = stats['loss']
       metrics.reset()
@@ -213,110 +262,60 @@ def find_lowest_divergent(
   print()
   print(f'Minimum divergent learning rate: {ceiling_lr:10.9f}')
 
-def layerwise_optimizers(model, tx):
-  prefixes = [('layers', l, 'mod') for l in range(len(model.layers))][::-1]
-  return [nnx.Optimizer(model, tx, wrt=filterlib.PathStartsWith(p)) for p in prefixes]
 
 def main(learning_rate=0.001,
-         num_layers=2, 
-         input_width=2,
-         layer_width=2, 
+         widths=None,
          batch_size=1, 
          num_steps=3000, 
          eval_every=100, 
-         do_seqgrad=True,
-         do_layerwise_opt=False,
-         stop_early=True,
+         do_seqgrad=False,
+         opt_mode='single',
+         loss_mode='origin',
+         goal_loss=0.0,
          seed=12345):
+
+  if widths is None:
+    widths = [2, 2]
+
   print(
-      f'{learning_rate=}, '
-      f'{seed=}, '
-      f'{do_seqgrad=}, '
-      f'{do_layerwise_opt=}, '
-      f'{num_layers=}, '
-      f'{input_width=}, '
-      f'{layer_width=}, '
-      f'{num_steps=}, '
-      f'{eval_every=}')
-  tx = optax.sgd(learning_rate)
-  input_width = 2
+      f'{learning_rate=}\n'
+      f'{seed=}\n'
+      f'{do_seqgrad=}\n'
+      f'{opt_mode=}\n'
+      f'{loss_mode=}\n'
+      f'{widths=}\n'
+      f'{num_steps=}\n'
+      f'{goal_loss=}\n'
+      f'{eval_every=}\n')
   rngs = nnx.Rngs(seed)
-  model = Lin2(tx, num_layers, input_width, layer_width, do_seqgrad, rngs)
-  if do_layerwise_opt:
-    optimizers = layerwise_optimizers(model, tx)
-  else:
-    optimizers = [nnx.Optimizer(model, tx)]
+  tx = optax.sgd(learning_rate)
+  model = Lin2(tx, widths, do_seqgrad, rngs)
+  optimizer = get_optimizer(model, tx, opt_mode)
 
   metrics = nnx.MultiMetric(loss=nnx.metrics.Average('loss'))
-  ds = sphere_dataset(num_steps, batch_size, input_width, rngs)
+  ds = sphere_dataset(num_steps, batch_size, widths[0], rngs)
   initial_loss = None
-  num_steps_to_goal = None
-  goal_loss = None
   
   for step, batch in enumerate(ds):
-    train_step(model, optimizers, metrics, batch)
+    train_step(model, metrics, batch, optimizer, loss_mode)
     stats = metrics.compute()
     metrics.reset()
     loss = stats['loss']
     if initial_loss is None:
       initial_loss = loss 
-    if num_steps_to_goal is None and initial_loss is not None:
-      if loss < 0.01 * initial_loss:
-        num_steps_to_goal = step
-        goal_loss = loss
-        if stop_early:
-          break
+    if loss < goal_loss:
+      break
 
     if step >= 0 and (step % eval_every == 0 or step == num_steps - 1):  # One training epoch has passed.
       print(
           f'seqgrad: {do_seqgrad} step: {step}, '
           f'loss: {stats["loss"]:8.7f}'
           )
-  print(f'Num steps for 100x loss reduction '
-        f'({initial_loss:8.7f} to {goal_loss:8.7f}): '
-        f'{num_steps_to_goal}')
-
-def scatter(file, probe_step, success_loss):
-  # draw a scatter plot in log scale
-  import matplotlib.pyplot as plt
-  xs, ys = [], []
-  with open(file, 'r') as fh:
-    for line in fh:
-      line.strip()
-      x, y = line.split('\t')
-      x = float(x)
-      y = float(y)
-      xs.append(x)
-      ys.append(y)
-
-  min_nonzero_y = min(y for y in ys if y != 0.0)
-  max_y = max(ys)
-
-  xs = np.array(xs)
-  ys = np.array(ys)
-  ys = np.maximum(min_nonzero_y * 0.1, ys)
-  min_y = np.min(ys)
-  plt.figure(figsize=(12,6))
-  isinf = (ys == max_y)  
-  iszero = (ys == min_y) 
-  plt.scatter(xs[isinf], ys[isinf], color='red', alpha=0.6)
-  plt.scatter(xs[iszero], ys[iszero], color='green', alpha=0.6)
-  plt.scatter(xs[~(isinf | iszero)], ys[~(isinf | iszero)], alpha=0.6)
-  x_min, x_max = min(xs), max(xs)
-  # plt.xticks(np.linspace(x_min, x_max, 10), rotation=90, ha='center')
-  plt.yscale('log')
-  plt.xlabel('learning rate')
-  plt.ylabel(f'loss at step {probe_step}')
-  plt.title(f'Learning rate probed at step {probe_step} for threshold {success_loss}')
-  plt.grid(True, which="both", ls="-", alpha=0.2)
-  plt.tight_layout()
-  plt.show()
 
 
 if __name__ == '__main__':
   cmds = dict(main=main, 
               findl=find_lowest_divergent, 
-              stoc=stochastic_lr_search, 
-              scatter=scatter)
+              stoc=stochastic_lr_search)
   fire.Fire(cmds)
 
