@@ -61,18 +61,18 @@ def zero_mapping_sqrt_loss_fn(model, batch):
 
 
 @nnx.jit(static_argnames=('loss_mode'))
-def train_step(model, metrics: nnx.MultiMetric, batch, optimizer, loss_mode):
+def train_step(optimizer, metrics: nnx.MultiMetric, batch, loss_mode):
   loss_fn = get_loss_fn(loss_mode)
-  # for i in range(optimizer.num_substeps):
   def step_fn(step, inputs):
-    _, optimizer = inputs
+    # jax.debug.print('step: {}', step)
+    optimizer, _ = inputs
     diff_state = nnx.DiffState(0, optimizer.wrt)
     grad_fn = nnx.value_and_grad(loss_fn, has_aux=False, argnums=diff_state)
-    loss, grads = grad_fn(model, batch)
+    loss, grads = grad_fn(optimizer.model, batch)
     optimizer.update(grads, step)
-    return loss, optimizer 
+    return optimizer, loss
 
-  loss, _ = nnx.fori_loop(0, optimizer.num_substeps, step_fn, (0.0, optimizer))
+  _, loss = nnx.fori_loop(0, optimizer.num_steps(), step_fn, (optimizer, 0.0))
   metrics.update(loss=loss)
 
 def make_test_fn(step_budget, batch_size, widths, do_seqgrad, opt_mode, loss_mode):
@@ -80,14 +80,12 @@ def make_test_fn(step_budget, batch_size, widths, do_seqgrad, opt_mode, loss_mod
   def diverges(lr, target_loss, rngs):
     tx = optax.sgd(lr)
     model = Lin2(tx, widths, do_seqgrad, rngs)
-    # train_step = make_train_step(model, tx, opt_mode, loss_mode)
-    # loss_fn = get_loss_fn(loss_mode)
     optimizer = get_optimizer(model, tx, opt_mode)
     ds = sphere_dataset(step_budget, batch_size, widths[0], rngs)
     metrics = nnx.MultiMetric(loss=nnx.metrics.Average('loss'))
     initial_loss = None
     for step, batch in enumerate(ds):
-      train_step(model, metrics, batch, optimizer, loss_mode)
+      train_step(optimizer, metrics, batch, loss_mode)
       stats = metrics.compute()
       metrics.reset()
       loss = stats['loss']
@@ -117,15 +115,14 @@ def get_loss_fn(loss_mode):
     raise RuntimeError(f'loss_mode must be either `origin`, `origin_sqrt` or `sphere`, got {loss_mode}')
   
 def get_optimizer(model, tx, opt_mode):
-  if opt_mode == 'layer':
-    prefixes = [('layers', l, 'mod') for l in range(len(model.layers))][::-1]
-    filters = [filterlib.PathStartsWith(p) for p in prefixes]
-    update_exprs = [ParamUpdateExpr(f, None) for f in filters]
-    return opt.PartialOptimizer(update_exprs, model, tx)
-  elif opt_mode == 'single':
-    return opt.PartialOptimizer(opt.SequentialCoordFn, model, tx)
+  if opt_mode == 'per_layer':
+    return opt.LayerOptimizer(model, tx)
+  elif opt_mode == 'single_coord':
+    return opt.SequentialOptimizer(model, tx)
+  elif opt_mode == 'all_param':
+    return opt.AllParamOptimizer(model, tx)
   elif opt_mode == 'odd_even':
-    return opt.PartialOptimizer(opt.OddEvenCoordFn, model, tx)
+    return opt.PartialOptimizer(model, tx)
   elif opt_mode == 'coord':
     # individual coordinates
     pass
@@ -220,11 +217,11 @@ def find_lowest_divergent(
   def target_loss(lr):
     tx = optax.sgd(lr)
     model = Lin2(tx, widths, do_seqgrad, rngs)
-    train_step(model, metrics, batch, optimizer, loss_mode)
     metrics = nnx.MultiMetric(loss=nnx.metrics.Average('loss'))
     ds = sphere_dataset(num_steps, batch_size, widths[0], dataset_seed)
+    optimizer = get_optimizer(model, tx, opt_mode)
     for step, batch in enumerate(ds):
-      train_step(model, metrics, batch)
+      train_step(optimizer, metrics, batch, loss_mode)
       stats = metrics.compute()
       loss = stats['loss']
       metrics.reset()
@@ -271,7 +268,7 @@ def main(learning_rate=0.001,
          do_seqgrad=False,
          opt_mode='single',
          loss_mode='origin',
-         goal_loss=0.0,
+         target_loss=0.0,
          seed=12345):
 
   if widths is None:
@@ -285,7 +282,7 @@ def main(learning_rate=0.001,
       f'{loss_mode=}\n'
       f'{widths=}\n'
       f'{num_steps=}\n'
-      f'{goal_loss=}\n'
+      f'{target_loss=}\n'
       f'{eval_every=}\n')
   rngs = nnx.Rngs(seed)
   tx = optax.sgd(learning_rate)
@@ -297,13 +294,13 @@ def main(learning_rate=0.001,
   initial_loss = None
   
   for step, batch in enumerate(ds):
-    train_step(model, metrics, batch, optimizer, loss_mode)
+    train_step(optimizer, metrics, batch, loss_mode)
     stats = metrics.compute()
     metrics.reset()
     loss = stats['loss']
     if initial_loss is None:
       initial_loss = loss 
-    if loss < goal_loss:
+    if loss < target_loss:
       break
 
     if step >= 0 and (step % eval_every == 0 or step == num_steps - 1):  # One training epoch has passed.
