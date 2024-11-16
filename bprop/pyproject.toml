@@ -3,7 +3,7 @@ requires = ["setuptools", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bprop-experiments"
+name = "seqgrad"
 version = "0.1.0"
 description = "Alternative BackProp experiments from Yaroslav Bulatov"
 authors = [{name="Henry Bigelow", email="hrbigelow@gmail.com"}]

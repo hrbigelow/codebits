@@ -1,4 +1,5 @@
 import sys
+import itertools
 from collections import deque
 import numpy as np
 import jax.numpy as jnp, jax
@@ -58,22 +59,28 @@ def zero_mapping_sqrt_loss_fn(model, batch):
   return loss
 
 @nnx.jit(static_argnames=('loss_mode',))
-def evaluate(optimizer, metrics, batch, loss_mode):
-  # accumulate metrics
+def evaluate(optimizer, points, loss_mode):
+  # points is f4[dataset_size, ndim]
+  dataset_size, ndim = points.shape
+  assert dataset_size % 100 == 0, f'{dataset_size=} must be divisible by 100'
+  points = points.reshape(dataset_size // 100, 100, ndim)
+  metrics = nnx.MultiMetric(loss=nnx.metrics.Average('loss'))
   loss_fn = get_loss_fn(loss_mode)
-  loss = loss_fn(optimizer.model, batch)
-  metrics.update(loss=loss)
+  for batch in points:
+    loss = loss_fn(optimizer.model, batch)
+    metrics.update(loss=loss)
+  return metrics.compute()['loss']
 
 
 @nnx.jit(static_argnames=('loss_mode'))
-def train_step(optimizer, metrics: nnx.MultiMetric, batch, coord_index, loss_mode):
+def train_step(optimizer, batch, coord_index, loss_mode):
   loss_fn = get_loss_fn(loss_mode)
     # jax.debug.print('step: {}', step)
   diff_state = nnx.DiffState(0, optimizer.wrt)
   grad_fn = nnx.value_and_grad(loss_fn, has_aux=False, argnums=diff_state)
   loss, grads = grad_fn(optimizer.model, batch)
   optimizer.update(grads, coord_index)
-  metrics.update(loss=loss)
+  return loss
 
 def make_test_fn(dataset_size, batch_size, max_iterations, widths, do_seqgrad,
                  opt_mode, loss_mode):
@@ -95,7 +102,7 @@ def make_test_fn(dataset_size, batch_size, max_iterations, widths, do_seqgrad,
       for coord_index in range(optimizer.num_coord_blocks()):
         ds = shuffle_dataset(ds, rngs())
         for step, batch in enumerate(ds):
-          train_step(optimizer, metrics, batch, coord_index, loss_mode)
+          _ = train_step(optimizer, metrics, batch, coord_index, loss_mode)
         test_ds = ds.reshape(*test_ds_shape)
         metrics.reset()
         for batch in test_ds:
@@ -132,8 +139,10 @@ def get_optimizer(model, tx, opt_mode):
   elif opt_mode == 'odd_even':
     return opt.PartialOptimizer(model, tx)
   else:
-    raise RuntimeError(f'opt_mode must be one of `layer`, `single`, `odd_even` or `coord`.'
-                       f'  got {opt_mode}')
+    raise RuntimeError(
+        f'opt_mode must be one of '
+        f'(per_layer, single_coord, all_param, odd_even). '
+        f'got "{opt_mode}"')
 
 
 def stochastic_lr_search(
@@ -187,7 +196,7 @@ def stochastic_lr_search(
 def main(learning_rate=0.001,
          widths=None,
          dataset_size=100,
-         max_epochs=10000,
+         max_train_steps=100000, 
          batch_size=1, 
          eval_every=100, 
          do_seqgrad=False,
@@ -203,7 +212,7 @@ def main(learning_rate=0.001,
       f'{learning_rate=}\n'
       f'{seed=}\n'
       f'{dataset_size=}\n'
-      f'{max_epochs=}\n'
+      f'{max_train_steps=}\n'
       f'{batch_size=}\n'
       f'{do_seqgrad=}\n'
       f'{opt_mode=}\n'
@@ -216,33 +225,25 @@ def main(learning_rate=0.001,
   tx = optax.sgd(learning_rate)
   model = Lin2(tx, widths, do_seqgrad, rngs)
   optimizer = get_optimizer(model, tx, opt_mode)
-
-  metrics = nnx.MultiMetric(loss=nnx.metrics.Average('loss'))
   assert dataset_size % batch_size == 0, f'{dataset_size=} must be multiple of {batch_size=}'
-  ds_shape = dataset_size, batch_size, widths[0]
-  test_ds_shape = dataset_size // 100, 100, widths[0]
-  ds = sphere_dataset(dataset_size, widths[0], data_key)
-  ds = ds.reshape(*ds_shape)
-  initial_loss = None
-  epoch = 0
+  points = sphere_dataset(dataset_size, widths[0], data_key)
+  ds = points.reshape(dataset_size, batch_size, widths[0])
+  train_step_num = 0
   
-  while epoch < max_epochs:
-    for coord_index in range(optimizer.num_coord_blocks()):
-      ds = shuffle_dataset(ds, rngs())
-      for step, batch in enumerate(ds):
-        train_step(optimizer, metrics, batch, coord_index, loss_mode)
-      if epoch % eval_every == 0:
-        test_ds = ds.reshape(*test_ds_shape)
-        metrics.reset()
-        for batch in test_ds:
-          evaluate(optimizer, metrics, batch, loss_mode) 
-        stats = metrics.compute()
-        loss = stats['loss']
-        print(f'epoch: {epoch}, coord: {coord_index}, step: {step}, loss: {loss:8.7f}')
+  for coord_index in itertools.cycle(range(optimizer.num_coord_blocks())):
+    ds = shuffle_dataset(ds, rngs())
+    for step, batch in enumerate(ds):
+      if train_step_num % eval_every == 0:
+        loss = evaluate(optimizer, points, loss_mode)
+        print(f'train_step: {train_step_num}, coord: {coord_index}, loss: {loss:8.7f}')
         if loss < target_loss:
-          break
-      epoch += 1
-
+          print(f'Converged')
+          return
+      _ = train_step(optimizer, batch, coord_index, loss_mode)
+      train_step_num += 1
+      if train_step_num >= max_train_steps:
+        print(f'Exceeded max train steps')
+        return
 
 if __name__ == '__main__':
   cmds = dict(main=main, stoc=stochastic_lr_search)
