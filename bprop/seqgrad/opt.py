@@ -14,7 +14,7 @@ class PartialOptimizer(nnx.Optimizer):
     state_list, self.treedef = jax.tree.flatten(state)
     self.param_shapes = [p.shape for p in state_list]
 
-  def num_steps(self):
+  def num_coord_blocks(self):
     """
     Return the number of sub-steps required for a complete SGD step
     """
@@ -22,7 +22,7 @@ class PartialOptimizer(nnx.Optimizer):
 
   def slices(self, i):
     """
-    i:  index for the substep, in [0, num_steps())
+    i:  index for the substep, in [0, num_coord_blocks())
     Returns:
     active: bool tensor.  active[i] means i'th parameter tensor is updated
     slices: List.  slices[i] provides a slice expression for the i'th parameter tensor
@@ -75,37 +75,48 @@ class PartialOptimizer(nnx.Optimizer):
     optimizer._update_opt_state(self.opt_state, new_opt_state_l)
 
 class SequentialOptimizer(PartialOptimizer):
-  # update one coordinate at a time
+  """
+  update one coordinate at a time
+  """
   def __init__(self, model, tx, wrt=nnx.Param):
     super().__init__(model, tx, wrt)
     sizes = [jnp.prod(jnp.array(shape)) for shape in self.param_shapes]
     self.cumul_sizes = nnx.Variable(jnp.cumsum(jnp.array([0] + sizes)))
 
-  def num_steps(self):
+  def num_coord_blocks(self):
     return sum((jnp.prod(jnp.array(shape)) for shape in self.param_shapes))
 
   def slices(self, i):
     active = (i >= self.cumul_sizes[:-1]) & (i < self.cumul_sizes[1:])
-    slice_exprs = i - self.cumul_sizes[:-1]
+    idxs = i - self.cumul_sizes[:-1]
+    slice_exprs = [ jnp.unravel_index(i, shape) for i, shape in zip(idxs, self.param_shapes) ]
+    
     return active, slice_exprs
 
 class LayerOptimizer(PartialOptimizer):
-  # update one layer's worth of parameters at a time
-  def num_steps(self):
+  """
+  update one layer's worth of parameters at a time
+  """
+  def num_coord_blocks(self):
     return len(self.param_shapes)
 
   def slices(self, i):
-    active = (i == jnp.arange(self.num_steps()))
-    slice_exprs = [Ellipsis] * self.num_steps()
+    active = (i == jnp.arange(self.num_coord_blocks()))
+    slice_exprs = [Ellipsis] * self.num_coord_blocks()
     return active, slice_exprs
 
 class AllParamOptimizer(PartialOptimizer):
   """
-  Update all trainable parameters together
+  update all trainable parameters together
   """
-  def num_steps(self):
+  def num_coord_blocks(self):
     return 1
 
   def slices(self, i):
     return jnp.array([True]), [Ellipsis]
 
+class OddEvenOptimizer(PartialOptimizer):
+  """
+  alternately update odd-indexed or even-indexed parameters.
+  """
+  pass
