@@ -9,7 +9,7 @@ description = "Alternative BackProp experiments from Yaroslav Bulatov"
 authors = [{name="Henry Bigelow", email="hrbigelow@gmail.com"}]
 dependencies = [
   # "transformers",
-  "flax",
+  "flax>=0.10.1",
   "jax",
   "optax",
   "tensorflow",
