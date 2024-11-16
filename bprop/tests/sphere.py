@@ -187,7 +187,7 @@ def stochastic_lr_search(
 def main(learning_rate=0.001,
          widths=None,
          dataset_size=100,
-         max_iterations=10,
+         max_epochs=10000,
          batch_size=1, 
          eval_every=100, 
          do_seqgrad=False,
@@ -203,7 +203,7 @@ def main(learning_rate=0.001,
       f'{learning_rate=}\n'
       f'{seed=}\n'
       f'{dataset_size=}\n'
-      f'{max_iterations=}\n'
+      f'{max_epochs=}\n'
       f'{batch_size=}\n'
       f'{do_seqgrad=}\n'
       f'{opt_mode=}\n'
@@ -224,27 +224,24 @@ def main(learning_rate=0.001,
   ds = sphere_dataset(dataset_size, widths[0], data_key)
   ds = ds.reshape(*ds_shape)
   initial_loss = None
-  iteration = 0
+  epoch = 0
   
-  while iteration < max_iterations:
+  while epoch < max_epochs:
     for coord_index in range(optimizer.num_coord_blocks()):
       ds = shuffle_dataset(ds, rngs())
       for step, batch in enumerate(ds):
         train_step(optimizer, metrics, batch, coord_index, loss_mode)
-
-      test_ds = ds.reshape(*test_ds_shape)
-      metrics.reset()
-      for batch in test_ds:
-        evaluate(optimizer, metrics, batch, loss_mode) 
-      stats = metrics.compute()
-      loss = stats['loss']
-
-      if initial_loss is None:
-        initial_loss = loss 
-      if loss < target_loss:
-        break
-      print(f'iteration: {iteration}, coord: {coord_index}, step: {step}, loss: {loss:8.7f}')
-    iteration += 1
+      if epoch % eval_every == 0:
+        test_ds = ds.reshape(*test_ds_shape)
+        metrics.reset()
+        for batch in test_ds:
+          evaluate(optimizer, metrics, batch, loss_mode) 
+        stats = metrics.compute()
+        loss = stats['loss']
+        print(f'epoch: {epoch}, coord: {coord_index}, step: {step}, loss: {loss:8.7f}')
+        if loss < target_loss:
+          break
+      epoch += 1
 
 
 if __name__ == '__main__':
