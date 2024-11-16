@@ -93,7 +93,7 @@ for opts in $opstrings; do
   filename=$(basename $filepath)
   filename_small=${filename/.png/_small.png}
   filepath_small=${filepath/.png/_small.png}
-  message=${output[2]}
+  message="${output[2]} (${output[3]} s)"
   convert -resize 25% $filepath $filepath_small
 
   cat<<EOF

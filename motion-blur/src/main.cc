@@ -110,6 +110,11 @@ int main(int argc, char *argv[]) {
         .implicit_value(true)
         .default_value(false);
 
+    program.add_argument("-pre", "--preview-only")
+        .help("If present, print out just the homography matrices and exit")
+        .implicit_value(true)
+        .default_value(false);
+
     try {
         program.parse_args(argc, argv);
     }
@@ -134,6 +139,7 @@ int main(int argc, char *argv[]) {
     auto project_x = program.get<std::vector<float>>("-px");
     auto project_y = program.get<std::vector<float>>("-py");
     auto wiggle = program.get<bool>("-wig");
+    auto preview_only = program.get<bool>("-pre");
     auto exposure_mul = program.get<float>("-em");
     auto pixel_buf_bytes = program.get<int>("-pbuf");
 
@@ -164,19 +170,6 @@ int main(int argc, char *argv[]) {
     if (wiggle)
         out_opts << " -wig";
 
-    auto name = alpha_numeric(std::hash<std::string>{}(out_opts.str()));
-    output_path << name << ".png";
-
-    int w, h, c;
-    uchar3 *h_image = (uchar3 *)stbi_load(input_file.c_str(), &w, &h, &c, 0);
-    std::cerr << "image: " << w << " x " << h << " x " << c << std::endl;
-    if (viewport[0] == 0 && viewport[1] == 0) {
-        viewport[0] = w;
-        viewport[1] = h;
-    }
-    size_t outputSize = sizeof(uchar3) * viewport[0] * viewport[1];
-    uchar3 *h_blurred = (uchar3 *)malloc(sizeof(uchar3) * outputSize);
-
     Homography trajectory[MAX_HOMOGRAPHY_MATS];
     float inc = 1.0 / (float)(MAX_HOMOGRAPHY_MATS - 1);
     float t;
@@ -203,6 +196,26 @@ int main(int argc, char *argv[]) {
                 ref_point[0], ref_point[1],
                 trajectory[i]);
     }
+
+    if (preview_only) {
+        for (auto &hom: trajectory) {
+            print_mat(hom);
+        }
+        return 0;
+    }
+
+    auto name = alpha_numeric(std::hash<std::string>{}(out_opts.str()));
+    output_path << name << ".png";
+
+    int w, h, c;
+    uchar3 *h_image = (uchar3 *)stbi_load(input_file.c_str(), &w, &h, &c, 0);
+    std::cerr << "image: " << w << " x " << h << " x " << c << std::endl;
+    if (viewport[0] == 0 && viewport[1] == 0) {
+        viewport[0] = w;
+        viewport[1] = h;
+    }
+    size_t outputSize = sizeof(uchar3) * viewport[0] * viewport[1];
+    uchar3 *h_blurred = (uchar3 *)malloc(sizeof(uchar3) * outputSize);
 
     auto elapsed = motionBlur(trajectory, MAX_HOMOGRAPHY_MATS, h_image, w, h, pixel_buf_bytes,
             steps_per_occu_block, h_blurred, viewport[0], viewport[1], exposure_mul);

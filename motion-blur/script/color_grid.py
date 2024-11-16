@@ -13,8 +13,8 @@ def random_color(min_sum=200, max_sum=765):
     return r, g, b 
 
 # Image size and grid configuration
-def main(image_width, image_height, grid_size, num_dots, radius, out_file):
-    image = Image.new('RGB', (image_width, image_height), 'black')
+def main(image_width, image_height, grid_size, num_dots, radius, background_color, out_file):
+    image = Image.new('RGB', (image_width, image_height), background_color)
     draw = ImageDraw.Draw(image)
 
     for i in range(num_dots):

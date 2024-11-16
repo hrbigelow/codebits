@@ -86,7 +86,7 @@ void make_homography(
 
 void print_mat(Homography &mat){
   for (int i=0; i!=3; i++) {
-    printf("%5.2f %5.2f %5.2f\n", mat[i][0], mat[i][1], mat[i][2]);
+    printf("%5.8f %5.8f %5.8f\n", mat[i][0], mat[i][1], mat[i][2]);
   }
 }
 

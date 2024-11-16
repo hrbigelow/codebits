@@ -89,11 +89,6 @@ __global__ void motionBlur_kernel(
     const int buf_size = pixel_buf_bytes / sizeof(uchar4);
     const int num_timesteps = (int)((unsigned int)ceilf(box_size * steps_per_occu_block))>>10;
 
-    int voff = 0; // offset into virtual buffer [0, box_size)
-    int loff; // offset into pixel_buf [0, buf_size)
-    int x, y;
-    float t;
-    unsigned int idx;
     const uchar4 zero = make_uchar4(0, 0, 0, 0);
     int num_accum[4] = {0, 0, 0, 0};
     int4 out_pixel[4] = { 
@@ -102,51 +97,56 @@ __global__ void motionBlur_kernel(
         make_int4(0, 0, 0, 0), 
         make_int4(0, 0, 0, 0), 
     };
-    uchar4 pixel4; 
 
     increment = (float)num_mats / (float)(num_timesteps - 1);
     float2 source, target;
 
-    while (voff < box_size) {
-        loff = thread_id;
-        while (loff < buf_size) {
-            x = box_start.x + (voff + loff) % box_width;
-            y = box_start.y + (voff + loff) / box_width; 
-            idx = wrap_mod(y, input_height) * input_width + wrap_mod(x, input_width);
+    for (int voff = 0; voff < box_size; voff += buf_size) {
+        // load next chunk of pixel data into SMEM 
+        for (int loff = thread_id; loff < buf_size; loff += BLOCK_SIZE) {
+            int voff_loff = voff + loff;
+            int x = box_start.x + voff_loff % box_width;
+            int y = box_start.y + voff_loff / box_width; 
+            unsigned int idx = wrap_mod(y, input_height) * input_width + wrap_mod(x, input_width);
             uchar3 pixel3 = image[idx];
             pixel_buf[loff] = make_uchar4(pixel3.x, pixel3.y, pixel3.z, 0);
-            loff += BLOCK_SIZE;
         }
         __syncthreads();
 
+        // update the cumulant data for all four target pixels into `out_pixel` with
+        // information in this input pixel chunk.  Unfortunately, all timesteps must
+        // be traversed here, even though
+        // some will fall outside the loaded region.
         target = make_float2(gx + (float)threadIdx.x + 0.5, gy + (float)threadIdx.y + 0.5);
         for (int ty = 0; ty != 4; ty++) {
-            t = 0.0;
+            float t = 0.0;
             for (int i = 0; i != num_timesteps; ++i) {
                 // t = increment * (i + curand_normal(&randState) * 0.05);
                 source = lin_transform(trajectory_buf, num_mats, t, target);
-                t += increment;
+                t = i * increment;
                 int voff_src = (
                         ((int)floorf(source.y) - box_start.y) * box_width +
                         ((int)floorf(source.x) - box_start.x));
 
-                loff = voff_src - voff;
-                pixel4 = (loff >= 0 && loff < buf_size) ? pixel_buf[loff] : zero;
+                int loff = voff_src - voff;
+                // using branch results in about 0.5% speedup :)
+                if (loff < 0 || loff >= buf_size) continue;
+                // uchar4 pixel4 = valid ? pixel_buf[loff] : zero;
+                uchar4 pixel4 = pixel_buf[loff];
                 out_pixel[ty].x += pixel4.x;
                 out_pixel[ty].y += pixel4.y;
                 out_pixel[ty].z += pixel4.z;
-                num_accum[ty] += (loff >= 0 && loff < buf_size) ? 1 : 0;
+                num_accum[ty] += 1;
             }
             target.y += (float)BLOCK_DIM_Y;
         }
         __syncthreads();
-        voff += buf_size;
     }
 
     uint2 target_pixel = make_uint2((int)gx + threadIdx.x, (int)gy + threadIdx.y);
     for (int ty = 0; ty != 4; ty++) {
         if (target_pixel.x < viewportWidth && target_pixel.y < viewportHeight) {
-            idx = target_pixel.y * viewportWidth + target_pixel.x;
+            unsigned int idx = target_pixel.y * viewportWidth + target_pixel.x;
             float mul = exposure_mul / (float)num_accum[ty];
             blurred[idx].x = min(roundf((float)out_pixel[ty].x * mul), 255.0);
             blurred[idx].y = min(roundf((float)out_pixel[ty].y * mul), 255.0);
@@ -202,7 +202,7 @@ double motionBlur(
 
     CUDA_CHECK(cudaDeviceSynchronize());
     auto end_time = std::chrono::high_resolution_clock::now();
-    auto elapsed = end_time - start_time;
+    const std::chrono::duration<double> elapsed = end_time - start_time;
     // std::cerr << "Rendering time (seconds): " << elapsed.count() << std::endl;
 
     CUDA_CHECK(cudaGetLastError());
