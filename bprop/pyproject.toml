@@ -16,7 +16,7 @@ dependencies = [
   "tensorflow-datasets>=4.9.2",
   "fire",
   "numpy",
-  # "streamvis @ git+https://github.com/hrbigelow/streamvis.git"
+  "streamvis @ git+https://github.com/hrbigelow/streamvis.git"
 ]
 
 [tool.setuptools]

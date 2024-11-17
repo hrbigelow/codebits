@@ -1,0 +1,19 @@
+loss:
+  name_pattern: lr-
+  color:
+    palette: Viridis10
+    max_groups: 20
+    formula: name
+  figure_kwargs:
+    title: 
+      text: loss
+    y_axis_type: los
+    xaxis:
+      axis_label: SGD Steps
+    yaxis:
+      axis_label: loss
+  glyph_kind: line
+  columns:
+    - x
+    - y
+

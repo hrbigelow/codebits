@@ -10,27 +10,48 @@ from typing import List
 import optax
 from seqgrad.module import SGModule
 from seqgrad import opt
+from seqgrad.tools import get_function_args
+from pprint import pprint
 
-def sphere_dataset(total_size, ndims, data_key):
-  # Generate random points on a `ndims` unit sphere 
-  z = jax.random.normal(data_key, (total_size, ndims))
+def sphere_dataset(total_size, ndims, rng_key):
+  # random points on an `ndims`-dimensional unit hypersphere 
+  z = jax.random.normal(rng_key, (total_size, ndims))
   z = z / jnp.sqrt(jnp.sum(z ** 2, axis=1, keepdims=True))
   return z
 
-def shuffle_dataset(dataset, shuf_key):
-  perm = jax.random.permutation(shuf_key, dataset.shape[0]) 
+def so_squared_dataset(ndims, rng_key):
+  from scipy.stats import special_ortho_group
+  key_data = jax.random.key_data(rng_key)
+  mat = special_ortho_group.rvs(ndims, 1, np.random.RandomState(key_data))
+  return mat ** 2
+
+def get_dataset(dataset_type, ndims, total_size, rng_key):
+  if dataset_type == 'sphere':
+    return sphere_dataset(total_size, ndims, rng_key)
+  elif dataset_type == 'so_squared':
+    return so_squared_dataset(ndims, rng_key)
+  else:
+    raise RuntimeError(f'{dataset_type=} must be one of (sphere, so_squared)')
+
+def shuffle_dataset(dataset, rng_key):
+  perm = jax.random.permutation(rng_key, dataset.shape[0]) 
   return dataset[perm,:]
 
 class Lin2(nnx.Module):
   def __init__(self, 
-               tx: optax.GradientTransformation,
                widths: List[int], 
-               do_seqgrad: bool,
                rngs: nnx.Rngs,
+               init_mode: str,
                use_bias: bool=False):
 
+    if init_mode == 'ortho':
+      init = nnx.initializers.orthogonal()
+    else:
+      init = nnx.initializers.variance_scaling()
+
     self.layers = [
-        SGModule(nnx.Linear, tx, do_seqgrad, in_dim, out_dim, rngs=rngs, use_bias=use_bias)
+        # SGModule(nnx.Linear, tx, do_seqgrad, in_dim, out_dim, rngs=rngs, use_bias=use_bias)
+        nnx.Linear(in_dim, out_dim, rngs=rngs, use_bias=use_bias, kernel_init=init)
         for in_dim, out_dim in zip(widths[:-1], widths[1:])
         ]
 
@@ -87,7 +108,7 @@ def make_test_fn(dataset_size, batch_size, max_iterations, widths, do_seqgrad,
 
   def diverges(lr, target_loss, data_key, rngs):
     tx = optax.sgd(lr)
-    model = Lin2(tx, widths, do_seqgrad, rngs)
+    model = Lin2(widths, rngs, init_mode)
     optimizer = get_optimizer(model, tx, opt_mode)
     assert dataset_size % batch_size == 0, f'{dataset_size=} must be multiple of {batch_size=}'
     ds_shape = dataset_size, batch_size, widths[0]
@@ -161,19 +182,7 @@ def stochastic_lr_search(
   if widths is None:
     widths = [2, 2]
 
-  print(
-      f'{seed=}\n'
-      f'{starting_lr=}\n'
-      f'{warmup=}\n'
-      f'{window_size=}\n'
-      f'{factor=}\n'
-      f'{step_budget=}\n'
-      f'{target_loss=}\n'
-      f'{widths=}\n'
-      f'{do_seqgrad=}\n'
-      f'{opt_mode=}\n'
-      f'{loss_mode=}\n'
-      )
+  print('\n'.join(f'{k:18} = {v}' for k, v in get_function_args().items()))
 
   diverges_fn = make_test_fn(step_budget, batch_size, widths, do_seqgrad, opt_mode, loss_mode)
 
@@ -193,57 +202,76 @@ def stochastic_lr_search(
   print(f'\r{opt_mode=} {loss_mode=} {widths=} {stochastic_lr=:9.8f}')
 
 
-def main(learning_rate=0.001,
-         widths=None,
-         dataset_size=100,
-         max_train_steps=100000, 
-         batch_size=1, 
-         eval_every=100, 
-         do_seqgrad=False,
-         opt_mode='single',
-         loss_mode='origin',
-         target_loss=0.0,
-         seed=12345):
-
-  if widths is None:
-    widths = [2, 2]
-
-  print(
-      f'{learning_rate=}\n'
-      f'{seed=}\n'
-      f'{dataset_size=}\n'
-      f'{max_train_steps=}\n'
-      f'{batch_size=}\n'
-      f'{do_seqgrad=}\n'
-      f'{opt_mode=}\n'
-      f'{loss_mode=}\n'
-      f'{widths=}\n'
-      f'{target_loss=}\n'
-      f'{eval_every=}\n')
-  rngs = nnx.Rngs(seed)
-  data_key = rngs()
-  tx = optax.sgd(learning_rate)
-  model = Lin2(tx, widths, do_seqgrad, rngs)
-  optimizer = get_optimizer(model, tx, opt_mode)
-  assert dataset_size % batch_size == 0, f'{dataset_size=} must be multiple of {batch_size=}'
-  points = sphere_dataset(dataset_size, widths[0], data_key)
-  ds = points.reshape(dataset_size, batch_size, widths[0])
+def coordinate_descent(optimizer, points, learning_rate, batch_size, target_loss, rngs, eval_every,
+                       max_train_steps, loss_mode, logger):
   train_step_num = 0
-  
+  initial_loss = evaluate(optimizer, points, loss_mode)
+  dataset_size, ndims = points.shape
+  ds = points.reshape(dataset_size // batch_size, batch_size, ndims)
+
   for coord_index in itertools.cycle(range(optimizer.num_coord_blocks())):
     ds = shuffle_dataset(ds, rngs())
     for step, batch in enumerate(ds):
       if train_step_num % eval_every == 0:
         loss = evaluate(optimizer, points, loss_mode)
         print(f'train_step: {train_step_num}, coord: {coord_index}, loss: {loss:8.7f}')
+        if logger is not None:
+          logger.write(f'lr-{learning_rate}', x=train_step_num, y=loss)
         if loss < target_loss:
-          print(f'Converged')
-          return
+          return 'Converged'
+        if loss > 5.0 * initial_loss:
+          return 'Diverged'
       _ = train_step(optimizer, batch, coord_index, loss_mode)
       train_step_num += 1
       if train_step_num >= max_train_steps:
-        print(f'Exceeded max train steps')
-        return
+        return 'Exceeded max train steps'
+
+def main(learning_rate=0.001,
+         widths=None,
+         dataset_type='so_squared',
+         dataset_size=100,
+         max_train_steps=100000, 
+         batch_size=1, 
+         eval_every=100, 
+         # do_seqgrad=False,
+         opt_mode='single',
+         loss_mode='origin',
+         init_mode='ortho',
+         target_loss=0.0,
+         seed=12345,
+         log_run_name=None,
+         log_path=None):
+
+  if widths is None:
+    widths = [2, 2]
+
+  print('\n'.join(f'{k:18} = {v}' for k, v in get_function_args().items()))
+  rngs = nnx.Rngs(seed)
+  data_key = rngs()
+  tx = optax.sgd(learning_rate)
+  model = Lin2(widths, rngs, init_mode)
+  optimizer = get_optimizer(model, tx, opt_mode)
+  assert dataset_size % batch_size == 0, f'{dataset_size=} must be multiple of {batch_size=}'
+  ndims = widths[0]
+  points = get_dataset(dataset_type, ndims, dataset_size, data_key)
+
+  train_step_num = 0
+
+  if log_run_name is not None:
+    assert log_path is not None, f'log_path not provided but log_run_name provided'
+    buffer_items = 100
+    from streamvis.logger import DataLogger
+    logger = DataLogger(log_run_name)
+    logger.init(log_path, buffer_items)
+  else:
+    logger = None
+
+  status = coordinate_descent(optimizer, points, learning_rate, batch_size,
+                              target_loss, rngs, eval_every, max_train_steps,
+                              loss_mode, logger)
+  if logger is not None:
+    logger.flush_buffer()
+  print(status)
 
 if __name__ == '__main__':
   cmds = dict(main=main, stoc=stochastic_lr_search)
