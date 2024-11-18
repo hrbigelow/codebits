@@ -20,6 +20,12 @@ class PartialOptimizer(nnx.Optimizer):
     """
     raise NotImplementedError
 
+  def on_new_step(self):
+    """
+    Called at the beginning of a new optimization pass (for all coord blocks)
+    """
+    pass
+
   def slices(self, i):
     """
     i:  index for the substep, in [0, num_coord_blocks())
@@ -29,13 +35,18 @@ class PartialOptimizer(nnx.Optimizer):
     """
     raise NotImplementedError
 
-  def _update_one(self, active, slice_expr, grad, param, opt_state):
+  def _update_one(self, active, slice_expr_or_mask, grad, param, opt_state):
     """
     Optionally updates one parameter tensor if it is active
     """
+    def do_update_mask(mask, grad, param, opt_state):
+      update, opt_state = self.tx.update(grad, opt_state) # TODO: optimize somehow?
+      new_param = optax.apply_updates(param, update)
+      return jnp.where(mask, param, new_param), opt_state
+
     # optionally compute updated grad, param and opt_state if `active`
     # will be applied to each param tensor
-    def do_update(grad, param, opt_state):
+    def do_update_slice_expr(slice_expr, grad, param, opt_state):
       grad_s = grad.at[slice_expr].get()
       param_s = param.at[slice_expr].get()
       # opt_state = opt_state[slice_expr].get() # TODO: generalize this for stateful updates
@@ -46,9 +57,19 @@ class PartialOptimizer(nnx.Optimizer):
       # opt_state = opt_state.at[slice_expr].set(opt_state_s)
       # jax.debug.print('in do_update: mean squared: update_s: {}', jnp.mean(update_s ** 2))
       return param, opt_state
+
+    def do_update(*args):
+      if isinstance(slice_expr_or_mask, jax.Array):
+        mask = slice_expr_or_mask
+        return do_update_mask(mask, *args)
+      else:
+        slice_expr = slice_expr_or_mask
+        return do_update_slice_expr(slice_expr, *args)
+
     def noop(grad, param, opt_state):
       # jax.debug.print('in noop')
       return param, opt_state 
+
     return jax.lax.cond(active, do_update, noop, grad, param, opt_state)
 
   def update(self, grads, i):
@@ -115,8 +136,29 @@ class AllParamOptimizer(PartialOptimizer):
   def slices(self, i):
     return jnp.array([True]), [Ellipsis]
 
-class OddEvenOptimizer(PartialOptimizer):
+class PartitionOptimizer(PartialOptimizer):
   """
-  alternately update odd-indexed or even-indexed parameters.
+  Update each parameter tensor in `npart` equal-sized partitions.
+  A new partition is used for each new SGD step
   """
-  pass
+  def __init__(self, model, tx, npart, rng, wrt=nnx.Param):
+    super().__init__(model, tx, wrt)
+    self.npart = npart
+    self.rng = rng
+    sizes = [jnp.prod(jnp.array(shape)) for shape in self.param_shapes]
+    self.blocks = [ nnx.Variable(jnp.arange(sz) % npart) for sz in sizes ]
+
+  def num_coord_blocks(self):
+    return self.npart
+
+  def on_new_step(self):
+    perms = [ jax.random.permutation(self.rng(), block) for block in self.blocks ]
+    self.shufs = [ nnx.Variable(perm.reshape(shp)) for perm, shp in zip(perms, self.param_shapes) ]
+
+  def slices(self, i):
+    active = jnp.full(len(self.param_shapes), True) # Update all tensors
+    slices = [ (bl.value == i) for bl in self.shufs ]
+    # jax.debug.print('slices[0]: {}', slices[0])
+    return active, slices
+
+

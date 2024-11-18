@@ -2,12 +2,12 @@ loss:
   name_pattern: lr-
   color:
     palette: Viridis10
-    max_groups: 20
+    max_groups: 3 
     formula: name
   figure_kwargs:
     title: 
       text: loss
-    y_axis_type: los
+    y_axis_type: log
     xaxis:
       axis_label: SGD Steps
     yaxis:

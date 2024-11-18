@@ -19,19 +19,25 @@ def sphere_dataset(total_size, ndims, rng_key):
   z = z / jnp.sqrt(jnp.sum(z ** 2, axis=1, keepdims=True))
   return z
 
-def so_squared_dataset(ndims, rng_key):
+def so_dataset(ndims, rng_key):
   from scipy.stats import special_ortho_group
   key_data = jax.random.key_data(rng_key)
   mat = special_ortho_group.rvs(ndims, 1, np.random.RandomState(key_data))
-  return mat ** 2
+  assert jnp.allclose((mat**2).sum(axis=0), 1.0)
+  assert jnp.allclose((mat**2).sum(axis=1), 1.0)
+  return mat
 
 def get_dataset(dataset_type, ndims, total_size, rng_key):
   if dataset_type == 'sphere':
     return sphere_dataset(total_size, ndims, rng_key)
-  elif dataset_type == 'so_squared':
-    return so_squared_dataset(ndims, rng_key)
+  elif dataset_type == 'so':
+    return so_dataset(ndims, rng_key)
   else:
-    raise RuntimeError(f'{dataset_type=} must be one of (sphere, so_squared)')
+    raise RuntimeError(f'{dataset_type=} must be one of (sphere, so)')
+
+def check_eigenvalues(data):
+    cov = data.T @ data / data.shape[0]
+    return np.linalg.eigvals(cov)
 
 def shuffle_dataset(dataset, rng_key):
   perm = jax.random.permutation(rng_key, dataset.shape[0]) 
@@ -78,6 +84,16 @@ def zero_mapping_sqrt_loss_fn(model, batch):
   norms2 = jnp.sum(y ** 2, axis=1)
   loss = jnp.mean(jnp.sqrt(norms2))
   return loss
+
+def get_loss_fn(loss_mode):
+  if loss_mode == 'origin':
+    return zero_mapping_loss_fn
+  elif loss_mode == 'origin_sqrt':
+    return zero_mapping_sqrt_loss_fn
+  elif loss_mode == 'sphere':
+    return sphere_mapping_loss_fn
+  else:
+    raise RuntimeError(f'loss_mode must be either `origin`, `origin_sqrt` or `sphere`, got {loss_mode}')
 
 @nnx.jit(static_argnames=('loss_mode',))
 def evaluate(optimizer, points, loss_mode):
@@ -139,18 +155,8 @@ def make_test_fn(dataset_size, batch_size, max_iterations, widths, do_seqgrad,
       iteration += 1
     return True
   return diverges
-
-def get_loss_fn(loss_mode):
-  if loss_mode == 'origin':
-    return zero_mapping_loss_fn
-  elif loss_mode == 'origin_sqrt':
-    return zero_mapping_sqrt_loss_fn
-  elif loss_mode == 'sphere':
-    return sphere_mapping_loss_fn
-  else:
-    raise RuntimeError(f'loss_mode must be either `origin`, `origin_sqrt` or `sphere`, got {loss_mode}')
   
-def get_optimizer(model, tx, opt_mode):
+def get_optimizer(model, tx, opt_mode, rng):
   if opt_mode == 'per_layer':
     return opt.LayerOptimizer(model, tx)
   elif opt_mode == 'single_coord':
@@ -159,6 +165,15 @@ def get_optimizer(model, tx, opt_mode):
     return opt.AllParamOptimizer(model, tx)
   elif opt_mode == 'odd_even':
     return opt.PartialOptimizer(model, tx)
+  elif opt_mode.startswith('partition'):
+    try:
+      npart = int(opt_mode[9:])
+      assert npart > 0
+    except Exception as e:
+      raise RuntimeError(
+          f'For opt_mode starting with `partition`, must end in positive integer.'
+          f'Got {opt_mode=}')
+    return opt.PartitionOptimizer(model, tx, npart, rng)
   else:
     raise RuntimeError(
         f'opt_mode must be one of '
@@ -210,6 +225,8 @@ def coordinate_descent(optimizer, points, learning_rate, batch_size, target_loss
   ds = points.reshape(dataset_size // batch_size, batch_size, ndims)
 
   for coord_index in itertools.cycle(range(optimizer.num_coord_blocks())):
+    if coord_index == 0:
+      optimizer.on_new_step()
     ds = shuffle_dataset(ds, rngs())
     for step, batch in enumerate(ds):
       if train_step_num % eval_every == 0:
@@ -228,7 +245,7 @@ def coordinate_descent(optimizer, points, learning_rate, batch_size, target_loss
 
 def main(learning_rate=0.001,
          widths=None,
-         dataset_type='so_squared',
+         dataset_type='so',
          dataset_size=100,
          max_train_steps=100000, 
          batch_size=1, 
@@ -237,7 +254,7 @@ def main(learning_rate=0.001,
          opt_mode='single',
          loss_mode='origin',
          init_mode='ortho',
-         target_loss=0.0,
+         target_loss=1e-5,
          seed=12345,
          log_run_name=None,
          log_path=None):
@@ -250,10 +267,13 @@ def main(learning_rate=0.001,
   data_key = rngs()
   tx = optax.sgd(learning_rate)
   model = Lin2(widths, rngs, init_mode)
-  optimizer = get_optimizer(model, tx, opt_mode)
+  optimizer = get_optimizer(model, tx, opt_mode, rngs)
   assert dataset_size % batch_size == 0, f'{dataset_size=} must be multiple of {batch_size=}'
   ndims = widths[0]
   points = get_dataset(dataset_type, ndims, dataset_size, data_key)
+  print(f'mean example sum: {jnp.mean(points.sum(axis=1))}')
+  print(f'mean example norm: {jnp.mean(jnp.sum(points ** 2, axis=1))}')
+  # print(f'eiginvalues of dataset: {check_eigenvalues(points)}')
 
   train_step_num = 0
 
